@@ -8,6 +8,7 @@ import * as THREE from 'three';
 import { pointAt, type Route, type RoutePoint, type Underpass } from '../geo/route.ts';
 import { patchMaterial, tunnelUniforms, MAX_TUNNEL_PTS, MAX_TUNNELS } from './atmosphere.ts';
 import { loadModel } from './Landmarks.ts';
+import { markShared, WorldGroup } from './dispose.ts';
 
 /** Half width of the bore (beyond the road edge) and roof heights above the road. */
 export const BORE = { side: 0.9, wall: 3.4, apex: 5.9 };
@@ -17,7 +18,7 @@ export const UNDERPASS_HALF = 4.3;
 /** Underpasses: from the lower road's centre line to the ends of the bridge's faces. */
 export const UNDERPASS_SIDE = 8;
 
-export class Tunnels extends THREE.Group {
+export class Tunnels extends WorldGroup {
   private spans: { a: number; b: number }[] = [];
   private tmp: Partial<RoutePoint> = {};
   private route: Route;
@@ -267,6 +268,6 @@ diffuseColor.rgb = mix(vec3(rkl), rkc, 0.35) * vec3(0.95, 0.93, 0.88) * 0.85;`,
 }`,
       );
   };
-  rockMat = patchMaterial(mat, { key: 'tunnelrock2' });
+  rockMat = markShared(patchMaterial(mat, { key: 'tunnelrock2' }));
   return rockMat;
 }

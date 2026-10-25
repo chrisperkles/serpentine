@@ -9,6 +9,7 @@ import { withLeadIn } from '../geo/leadIn.ts';
 import { buildRoute, findHairpins, type RouteData } from '../geo/route.ts';
 import { findSegments, stravaToSegments, type Segment } from '../sim/segments.ts';
 import { fetchStravaSegments, getStravaStatus } from '../sim/stravaApi.ts';
+import { SimClock } from '../sim/clock.ts';
 import { RideSession } from '../sim/session.ts';
 import { rideStats } from '../sim/stats.ts';
 import {
@@ -41,6 +42,7 @@ interface UpNext {
 
 interface Ride {
   session: RideSession;
+  clock: SimClock;
   hairpins: number[];
   ghostLabel: string | null;
   /** The ride so far, to keep in case the page goes away before it ends. */
@@ -155,6 +157,16 @@ export function App() {
       window.removeEventListener('pagehide', save);
     };
   }, [ride]);
+
+  // frames stop in a hidden tab (and come slowly while the GPU is busy): the ride carries on from a timer
+  useEffect(() => {
+    if (!ride || !engine) return;
+    const timer = setInterval(() => {
+      const last = ride.clock.lastAt;
+      if (!engine.paused && last !== null && performance.now() - last > 300) ride.clock.sync();
+    }, 250);
+    return () => clearInterval(timer);
+  }, [ride, engine]);
 
   // nobody touches the keyboard for an hour on a trainer: keep the display awake while riding, and ask before
   // the page goes away (Vite's client reloads it when it reconnects after the Mac slept)
@@ -354,7 +366,8 @@ export function App() {
         else if (e === 'lap' || e === 'ramp-done') audio.segmentEnd(true);
         else if (e === 'route-end') offerNext(session);
       });
-      engine.setOnFrame((dt) => {
+      // the ride runs on the wall clock; frames only show where it is
+      const clock = new SimClock((dt) => {
         if (session.state.status === 'ready') {
           pedal = (hub.metrics.power ?? 0) > 40 ? pedal + dt : 0;
           if (pedal > 1.2) {
@@ -363,6 +376,10 @@ export function App() {
           }
         }
         session.tick(dt);
+      });
+      engine.setOnFrame((dt, live) => {
+        if (live) clock.sync();
+        else clock.step(dt);
         const st = session.state;
         const next = upNextRef.current;
         if (next?.session === session && st.elapsed >= next.until) void goNext(next, req.holdWatts);
@@ -399,6 +416,7 @@ export function App() {
       const leadIn = route.leadIn > 0;
       setRide({
         session,
+        clock,
         hairpins: findHairpins(route),
         ghostLabel: best?.summary.summitTime ? `best ${fmtTime(best.summary.summitTime)}` : null,
         unfinished: () => ({

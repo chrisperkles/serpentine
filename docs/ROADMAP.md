@@ -27,11 +27,12 @@ with no order yet live in [BACKLOG.md](BACKLOG.md).
 
 - A trainer drop-out mid-ride: a banner on the HUD, and the gap kept out of NP/TSS instead of being counted
   as minutes at 0 W (`devices/index.ts` `onDisconnected`, `sim/session.ts`).
-- Ride time from the clock, not from drawn frames: below 10 fps the ride runs in slow motion today
-  (`Engine.ts` clamps a frame to 0.1 s), and a hidden Chrome tab stops it. Needed for multiplayer, too.
-- Free everything a ride built when it ends: props, life, tunnels, landmarks, textures and pacer name tags
-  are left in GPU memory today (`Engine.unloadWorld`). Check with `renderer.info.memory` over three rides.
-- Tests for the ride session, the unfinished-ride copy, storage and the device hub (fake devices).
+- [x] Ride time from the clock, not from drawn frames: below 10 fps the ride ran in slow motion (`Engine.ts`
+  clamped a frame to 0.1 s), and a hidden Chrome tab stopped it. Needed for multiplayer and the island, too.
+- [x] Free everything a ride built when it ends: props, life, tunnels, landmarks, textures and pacer name tags
+  were left in GPU memory (`Engine.unloadWorld`). Now flat over rides (`scripts/probe-memory.mjs`).
+- Tests for the ride session (started: the clock and the trainer gradient in `scripts/test-session.ts`), the
+  unfinished-ride copy, storage and the device hub (fake devices).
 
 ## Ideas from Zwift Plus (DC Rainmaker's review, 2026-10-29)
 

@@ -95,5 +95,7 @@ export function renderImpostorAtlas(renderer: THREE.WebGLRenderer, models: THREE
   renderer.autoClear = prevAuto;
   renderer.shadowMap.enabled = prevShadow;
   mat.dispose();
+  // disposeObject frees the whole target (its depth buffer too) through the texture
+  rt.texture.userData.renderTarget = rt;
   return rt.texture;
 }

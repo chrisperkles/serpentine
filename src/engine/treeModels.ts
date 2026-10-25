@@ -8,6 +8,7 @@
 // (high in closed forest, near the ground for open-grown trees).
 
 import * as THREE from 'three';
+import { markShared } from './dispose.ts';
 
 function rng(seed: number) {
   let s = seed >>> 0 || 1;
@@ -44,7 +45,7 @@ export function treeAtlas(url = '/textures/foliage.png'): THREE.Texture {
     tex.anisotropy = 8;
     tex.generateMipmaps = true;
     tex.minFilter = THREE.LinearMipmapLinearFilter;
-    atlases.set(url, (a = { tex, ready }));
+    atlases.set(url, (a = { tex: markShared(tex), ready }));
   }
   return a.tex;
 }

@@ -75,6 +75,17 @@ symptom (what it looked like), cause, fix and where. Newest at the bottom of eac
   sky, which is pale. In the Alps the low reflected rays hit the mountains across the lake. Fix: low reflected rays
   take a dark, hazed shore colour, steeper ones the sky (sea unchanged). Where: `terrainMaterial.ts` water block.
 
+- **Every ride left GPU memory behind** (textures 51 → 76 → 87 → 103 and geometries 93 → 171 after four rides).
+  `unloadWorld` freed geometry and materials of a few groups but no textures (signs, chevrons, asphalt loaded per
+  ride), no instance buffers, nothing under props, life, tunnels and landmarks, not the tree impostor atlas, and only
+  the texture of the sky's reflection map (PMREM), not its render target. Fix: `disposeObject` frees geometry,
+  materials, their textures (a render target through `texture.userData.renderTarget`) and instance buffers;
+  session caches (GLB models, foliage atlas, ground, asphalt and wall textures, shared materials) are marked with
+  `markShared` and survive; ride groups are `WorldGroup`s, so a build that finishes after the ride ended frees what it
+  adds. Now flat: 90 geometries and 52 textures after every ride. Check with `scripts/probe-memory.mjs`; to find a
+  leak, wrap `gl.createTexture`/`deleteTexture` and record stacks. Where: `src/engine/dispose.ts`,
+  `Engine.unloadWorld`, `Engine.updateEnvironment`.
+
 ## Placement and geometry
 
 - **Floating trunks and buildings.** They were placed on the raw DEM, but the road corridor is flattened. Fix:
@@ -244,3 +255,10 @@ symptom (what it looked like), cause, fix and where. Newest at the bottom of eac
   24 at that height, three groups (effort top left, climb top right, ride totals at the bottom) on translucent
   panels so labels hold against a bright sky; the big gradient sign gave way to a gradient figure with a colour
   underline, and VAM (30 s) joined the climb group. Where: `Hud.tsx`, `.hud` rules in `styles.css`, `session.ts`.
+- **Below 10 fps the ride ran in slow motion, and a hidden tab stopped it.** Drawn frames drove the ride and a frame
+  counted 0.1 s at most. Fix: the ride runs on the wall clock in steps of at most 50 ms, from the render loop and
+  from a 250 ms timer while frames don't come; a gap of more than 65 s (a Mac that slept) counts as 65 s. Capture
+  scripts that step a paused engine with `engine.frame(dt)` still get exactly dt. Where: `src/sim/clock.ts`,
+  `App.tsx` (`SimClock`, the fallback timer), `Engine.frame(dt)` hands `live` to the frame callback;
+  `scripts/test-session.ts`.
+

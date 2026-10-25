@@ -9,6 +9,7 @@ import { patchMaterial } from './atmosphere.ts';
 import { mergeColored } from './Road.ts';
 import { ALPINE, type Biome } from './biome.ts';
 import type { Barrier } from '../geo/osm.ts';
+import { markShared, WorldGroup } from './dispose.ts';
 
 /** Barrier type per stretch of route (from the route scene file, checked against street-level photos). */
 export interface BarrierSpan {
@@ -23,7 +24,7 @@ interface Run {
   b: number;
 }
 
-export class Roadside extends THREE.Group {
+export class Roadside extends WorldGroup {
   railRuns: Run[] = [];
   /** OSM retaining walls above the road, holding back the cut. */
   private cutRuns: Run[] = [];
@@ -580,6 +581,6 @@ float wNoise(vec2 p) {
       )
       ;
   };
-  masonryMat = patchMaterial(mat, { key: 'parapet' });
+  masonryMat = markShared(patchMaterial(mat, { key: 'parapet' }));
   return masonryMat;
 }

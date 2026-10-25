@@ -10,6 +10,7 @@ import { patchMaterial } from './atmosphere.ts';
 import { loadModel } from './Landmarks.ts';
 import type { Biome } from './biome.ts';
 import { Rider } from './Rider.ts';
+import { WorldGroup } from './dispose.ts';
 
 const CANOPIES = ['#f5a11a', '#d7263d', '#1b98e0', '#2bb673', '#f4d35e', '#7b2cbf', '#ff6b35', '#e0e0e0'];
 const KITS = ['#e63946', '#1d3557', '#2a9d8f', '#f4a261', '#f1f1ee', '#111214', '#ffb703', '#8338ec'];
@@ -98,7 +99,7 @@ interface Vehicle {
   overtaking: boolean;
 }
 
-export class Life extends THREE.Group {
+export class Life extends WorldGroup {
   private gliders: Glider[] = [];
   private cows: Cow[] = [];
   private birds: Bird[] = [];

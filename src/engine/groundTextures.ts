@@ -2,6 +2,7 @@
 // Real mipmaps + anisotropic filtering keep them crisp without the shimmer of per-pixel noise.
 
 import * as THREE from 'three';
+import { markShared } from './dispose.ts';
 
 function rng(seed: number) {
   let s = seed >>> 0;
@@ -152,9 +153,9 @@ let cache: { grass: THREE.Texture; rock: THREE.Texture; gravel: THREE.Texture } 
 export function groundTextures(anisotropy = 16) {
   if (!cache) {
     cache = {
-      grass: toTexture(grass(512), anisotropy),
-      rock: toTexture(rock(512), anisotropy),
-      gravel: toTexture(gravel(512), anisotropy),
+      grass: markShared(toTexture(grass(512), anisotropy)),
+      rock: markShared(toTexture(rock(512), anisotropy)),
+      gravel: markShared(toTexture(gravel(512), anisotropy)),
     };
   }
   return cache;

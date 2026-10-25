@@ -2,6 +2,7 @@
 // (height fog + sun-tinted in-scattering) and Earth curvature of every world material.
 
 import * as THREE from 'three';
+import { markShared } from './dispose.ts';
 
 export interface TimeOfDay {
   id: string;
@@ -64,6 +65,7 @@ export const EARTH_R = 6371000;
 
 export const WHITE_TEX = new THREE.DataTexture(new Uint8Array([255, 255, 255, 255]), 1, 1);
 WHITE_TEX.needsUpdate = true;
+markShared(WHITE_TEX);
 
 export const MAX_TUNNEL_PTS = 32;
 export const MAX_TUNNELS = 4;

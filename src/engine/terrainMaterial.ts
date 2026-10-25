@@ -7,9 +7,11 @@ import * as THREE from 'three';
 import { patchMaterial } from './atmosphere.ts';
 import { groundTextures } from './groundTextures.ts';
 import type { Biome } from './biome.ts';
+import { markShared } from './dispose.ts';
 
 const blank = new THREE.DataTexture(new Uint8Array([0, 0, 0, 255]), 1, 1);
 blank.needsUpdate = true;
+markShared(blank);
 
 export const terrainUniforms = {
   uWaterMask: { value: blank as THREE.Texture },
@@ -60,7 +62,7 @@ export function setTerrainBiome(b: Biome) {
       if (srgb) t.colorSpace = THREE.SRGBColorSpace;
       return t;
     };
-    cliffTex = { c: load('/textures/med/cliff.jpg', true), n: load('/textures/med/cliff_nor.jpg', false) };
+    cliffTex = { c: markShared(load('/textures/med/cliff.jpg', true)), n: markShared(load('/textures/med/cliff_nor.jpg', false)) };
   }
   terrainUniforms.uCliffTex.value = b.karst > 0 && cliffTex ? cliffTex.c : blank;
   terrainUniforms.uCliffNor.value = b.karst > 0 && cliffTex ? cliffTex.n : blank;

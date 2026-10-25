@@ -33,6 +33,7 @@ import { Signs } from './Signs.ts';
 import { Ocean } from './Ocean.ts';
 import { Props } from './Props.ts';
 import { Life } from './Life.ts';
+import { disposeObject } from './dispose.ts';
 import { loadBakedTrees, type BakedTrees } from '../geo/trees.ts';
 import type { Segment } from '../sim/segments.ts';
 import { loadMarkFonts, SegmentMarks } from './SegmentMarks.ts';
@@ -102,7 +103,9 @@ export class Engine {
   private raf = 0;
   private resizeObs: ResizeObserver;
   private quality: Quality;
-  private onFrame?: (dt: number) => void;
+  /** `live`: drawn by the render loop (ride time comes from the clock); false when a script steps the engine. */
+  private onFrame?: (dt: number, live: boolean) => void;
+  private looping = false;
   private biome: Biome = ALPINE;
   private fpsAcc = 0;
   private tmpV = new THREE.Vector3();
@@ -266,6 +269,7 @@ export class Engine {
 
   private pmrem: THREE.PMREMGenerator | null = null;
   private envScene: THREE.Scene | null = null;
+  private envTarget: THREE.WebGLRenderTarget | null = null;
 
   /** Image-based light from the current sky for PBR materials (bike, cars, rails, props). */
   private updateEnvironment() {
@@ -282,8 +286,10 @@ export class Engine {
       );
       this.envScene.add(ground);
     }
-    const old = this.scene.environment;
-    this.scene.environment = this.pmrem.fromScene(this.envScene!, 0.04, 0.5, 3000).texture;
+    // the whole render target goes: disposing only its texture left one behind per ride
+    const old = this.envTarget;
+    this.envTarget = this.pmrem.fromScene(this.envScene!, 0.04, 0.5, 3000);
+    this.scene.environment = this.envTarget.texture;
     this.scene.environmentIntensity = 0.55;
     old?.dispose();
   }
@@ -307,7 +313,7 @@ export class Engine {
     this.rig.snap();
   }
 
-  setOnFrame(cb?: (dt: number) => void) {
+  setOnFrame(cb?: (dt: number, live: boolean) => void) {
     this.onFrame = cb;
   }
 
@@ -634,41 +640,31 @@ export class Engine {
     this.bots = [];
     const w = this.world;
     if (!w) return;
-    this.scene.remove(w.terrain, w.road, w.rider, w.ghost, w.landmarks);
-    if (w.trees) this.scene.remove(w.trees);
-    if (w.buildings) this.scene.remove(w.buildings);
+    // first, so the forest and village builds still running see that their world is gone
+    this.world = null;
     if (w.cover) {
       this.scene.remove(w.cover);
       w.cover.dispose();
     }
+    this.scene.remove(w.terrain);
     w.terrain.dispose();
     w.shadow.dispose();
-    const dispose = (o: THREE.Object3D) =>
-      o.traverse((c) => {
-        const m = c as THREE.Mesh;
-        m.geometry?.dispose();
-        const mat = m.material as THREE.Material | THREE.Material[] | undefined;
-        if (Array.isArray(mat)) mat.forEach((x) => x.dispose());
-        else mat?.dispose();
-      });
-    if (w.roadside) this.scene.remove(w.roadside);
-    if (w.signs) this.scene.remove(w.signs);
-    if (w.marks) {
-      this.scene.remove(w.marks);
-      w.marks.dispose();
-    }
-    this.scene.remove(w.props, w.life, w.tunnels);
     if (w.ocean) {
       this.scene.remove(w.ocean);
       w.ocean.geometry.dispose();
       w.ocean.material.dispose();
     }
     clearTunnels();
-    w.props.clear();
-    w.life.clear();
-    [w.road, w.rider, w.ghost, w.trees, w.buildings, w.roadside, w.signs].forEach((o) => o && dispose(o));
-    w.landmarks.clear();
-    this.world = null;
+    // everything else the ride built; models, atlases and textures cached for the session stay (dispose.ts)
+    for (const g of [w.road, w.trees, w.buildings, w.roadside, w.signs, w.props, w.life, w.tunnels, w.landmarks]) g?.dispose();
+    if (w.marks) {
+      this.scene.remove(w.marks);
+      w.marks.dispose();
+    }
+    for (const r of [w.rider, w.ghost]) {
+      this.scene.remove(r);
+      disposeObject(r);
+    }
   }
 
   /** Arches, road paint and countdown boards for the ride's segments; `featured` is the Strava segment the pacers race. */
@@ -689,10 +685,8 @@ export class Engine {
   setBots(wkgs: number[], labels?: (string | undefined)[]) {
     for (const r of this.botRiders) {
       this.scene.remove(r);
-      r.traverse((o) => {
-        const m = o as THREE.Mesh;
-        m.geometry?.dispose();
-      });
+      // its materials and the name tag's canvas texture too
+      disposeObject(r);
     }
     this.botRiders = [];
     const kits = ['#2f7de1', '#f2c230', '#2fb36d', '#9b5de5', '#f15bb5'];
@@ -770,13 +764,18 @@ export class Engine {
       this.fpsFrames = 0;
       this.adaptScale();
     }
-    this.frame(dt);
+    this.looping = true;
+    try {
+      this.frame(dt);
+    } finally {
+      this.looping = false;
+    }
   };
 
   /** Advance the world by dt seconds and render once (the RAF loop, or a capture script while paused). */
   frame(dt: number) {
     atmo.uTime.value += dt;
-    this.onFrame?.(dt);
+    this.onFrame?.(dt, this.looping);
     this.lateral += (this.targetLateral - this.lateral) * (1 - Math.exp(-dt * 2.5));
     const w = this.world;
     if (w) {

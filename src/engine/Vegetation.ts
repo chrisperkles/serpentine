@@ -12,6 +12,7 @@ import { impostorGeometry, renderImpostorAtlas } from './impostors.ts';
 import { broadleafTint, coniferTint, dayOfYear, evergreenBroadTint, pineTint } from './season.ts';
 import { pointAt } from '../geo/route.ts';
 import type { BakedTrees } from '../geo/trees.ts';
+import { WorldGroup } from './dispose.ts';
 
 const BUCKET = 250;
 const NEAR = 230;
@@ -174,7 +175,7 @@ type Kind = 'spruceF' | 'spruceO' | 'beechF' | 'beechO';
 const KINDS: Kind[] = ['spruceF', 'spruceO', 'beechF', 'beechO'];
 const STRIDE = 9; // x, y, z, width, height, rot, r, g, b
 
-export class Vegetation extends THREE.Group {
+export class Vegetation extends WorldGroup {
   private buckets: Bucket[] = [];
   count = 0;
 
@@ -247,6 +248,7 @@ export class Vegetation extends THREE.Group {
       farMat.alphaToCoverage = true;
       const renderer = o.renderer;
       void treeAtlasReady(biome.atlas).then((tex) => {
+        if (this.disposed) return;
         farMat.map = renderImpostorAtlas(renderer, [near.spruceF, near.spruceO, near.beechF, near.beechO], tex);
         farMat.needsUpdate = true;
         blank.dispose();

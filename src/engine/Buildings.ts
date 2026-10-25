@@ -9,6 +9,7 @@ import type { Building, OsmWorld } from '../geo/osm.ts';
 import type { RouteIndex } from '../geo/route.ts';
 import { patchMaterial } from './atmosphere.ts';
 import { ALPINE, type Biome } from './biome.ts';
+import { WorldGroup } from './dispose.ts';
 
 const BUCKET = 600;
 
@@ -551,7 +552,7 @@ function reachesRoad(ring: Float32Array, index: RouteIndex, clear: number): bool
   return false;
 }
 
-export class Buildings extends THREE.Group {
+export class Buildings extends WorldGroup {
   count = 0;
   centres: number[] = [];
 

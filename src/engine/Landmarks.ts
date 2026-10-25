@@ -5,6 +5,7 @@ import * as THREE from 'three';
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
 import { lonLatToWorld, type WorldFrame } from '../geo/mercator.ts';
 import { patchMaterial } from './atmosphere.ts';
+import { markShared, WorldGroup } from './dispose.ts';
 
 export interface Placement {
   model: string; // file in /models
@@ -41,7 +42,8 @@ export function loadModel(name: string): Promise<THREE.Group> {
         const mats = Array.isArray(m.material) ? m.material : [m.material];
         mats.forEach((mat) => patchMaterial(mat, { key: `model:${mat.type}` }));
       });
-      return gltf.scene;
+      // clones share the cached geometry and materials: no ride's unload may free them
+      return markShared(gltf.scene);
     });
     cache.set(name, p);
   }
@@ -58,7 +60,7 @@ export async function loadRouteScene(routeId: string): Promise<RouteScene | null
   }
 }
 
-export class Landmarks extends THREE.Group {
+export class Landmarks extends WorldGroup {
   /** onRoad: parked vehicles (align) that would stand on the asphalt are left out. */
   async build(
     scene: RouteScene, frame: WorldFrame, groundAt: (x: number, z: number) => number, onRoad?: (x: number, z: number) => boolean,

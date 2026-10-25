@@ -119,6 +119,7 @@ export class GroundCover extends THREE.Group {
   private flowerMat: THREE.MeshLambertMaterial;
   private rockMat: THREE.Material;
   private sharedRockMat = false;
+  private disposed = false;
   private tuft = tuftGeometry(REGIONS.grass);
   private flowerTuft = tuftGeometry(REGIONS.flowers);
   private cushion = cushionGeometry();
@@ -175,6 +176,7 @@ export class GroundCover extends THREE.Group {
     // photo-scanned limestone (Poly Haven rock_07, decimated in Blender) once it has loaded
     void loadModel('rock_07.glb')
       .then((g) => {
+        if (this.disposed) return;
         g.updateMatrixWorld(true);
         g.traverse((c) => {
           const m = c as THREE.Mesh;
@@ -197,6 +199,7 @@ export class GroundCover extends THREE.Group {
     if (this.biome.palms > 0) {
       void loadModel('palm.glb')
         .then((g) => {
+          if (this.disposed) return;
           g.updateMatrixWorld(true);
           // one glTF primitive per material: merge them into one geometry with groups
           const geos: THREE.BufferGeometry[] = [];
@@ -221,6 +224,7 @@ export class GroundCover extends THREE.Group {
     // Poly Haven fern_02 (CC0), decimated in Blender: forest-floor cover
     if (this.biome.ferns) void loadModel('fern.glb')
       .then((g) => {
+        if (this.disposed) return;
         g.updateMatrixWorld(true);
         g.traverse((c) => {
           const m = c as THREE.Mesh;
@@ -465,6 +469,7 @@ export class GroundCover extends THREE.Group {
   }
 
   dispose() {
+    this.disposed = true;
     for (const chunk of this.chunks.values()) {
       for (const m of chunk.meshes) {
         m.dispose();
@@ -480,5 +485,9 @@ export class GroundCover extends THREE.Group {
     this.rock.dispose();
     this.grassMat.dispose();
     if (!this.sharedRockMat) this.rockMat.dispose();
+    this.palm?.dispose();
+    for (const m of [this.palmMats ?? []].flat()) m.dispose();
+    this.fern?.dispose();
+    this.fernMat?.dispose();
   }
 }

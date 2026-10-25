@@ -264,12 +264,19 @@ export class Rider extends THREE.Group {
       });
       return o;
     };
-    for (const o of p.bike) bike.remove(o);
+    // the primitives the model replaces (materials stay: the remaining parts still use them)
+    const drop = (o: THREE.Object3D) => o.traverse((c) => (c as THREE.Mesh).geometry?.dispose());
+    for (const o of p.bike) {
+      bike.remove(o);
+      drop(o);
+    }
     bike.add(cloneOf('bike'));
     for (const w of this.wheels) {
+      w.children.forEach(drop);
       w.clear();
       w.add(cloneOf('wheel'));
     }
+    this.crankArm.children.forEach(drop);
     this.crankArm.clear();
     this.crankArm.add(cloneOf('crank'));
     // torso: oriented hip → shoulder like the capsule it replaces
@@ -277,8 +284,12 @@ export class Rider extends THREE.Group {
     const t = cloneOf('torso');
     t.position.copy(capsule.position);
     t.quaternion.copy(capsule.quaternion);
-    for (const o of p.torso) this.torso.remove(o);
+    for (const o of p.torso) {
+      this.torso.remove(o);
+      drop(o);
+    }
     this.torso.add(t);
+    p.head.children.forEach(drop);
     p.head.clear();
     const hd = cloneOf('head');
     hd.rotation.x = 0.12;
@@ -288,6 +299,7 @@ export class Rider extends THREE.Group {
     const swapLimb = (limb: Limb, name: string, side: number) => {
       const g = cloneOf(name);
       const holder = limb.mesh;
+      holder.geometry.dispose();
       holder.geometry = new THREE.BufferGeometry();
       holder.add(g);
       g.scale.set(side, 1, 1);
@@ -295,6 +307,7 @@ export class Rider extends THREE.Group {
     for (const l of this.legs) {
       swapLimb(l.thigh, 'thigh', l.side);
       swapLimb(l.shin, 'shin', l.side);
+      l.foot.geometry.dispose();
       l.foot.geometry = new THREE.BufferGeometry();
       const shoe = cloneOf('shoe');
       shoe.scale.x = l.side;

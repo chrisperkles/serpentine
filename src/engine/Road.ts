@@ -4,12 +4,17 @@ import * as THREE from 'three';
 import type { Route } from '../geo/route.ts';
 import { patchMaterial } from './atmosphere.ts';
 import { ALPINE, type Biome } from './biome.ts';
+import { markShared, WorldGroup } from './dispose.ts';
 
 const SHOULDER = 0.55;
 
 const TILE = 2.6; // metres per asphalt texture repeat
 
+let asphalt: { color: THREE.Texture; normal: THREE.Texture; rough: THREE.Texture } | null = null;
+
+/** Loaded once per session (every ride used to load its own six). */
 function asphaltTextures() {
+  if (asphalt) return asphalt;
   const load = (f: string, srgb: boolean) => {
     const t = new THREE.TextureLoader().load(`/textures/asphalt/${f}`);
     t.wrapS = t.wrapT = THREE.RepeatWrapping;
@@ -17,7 +22,8 @@ function asphaltTextures() {
     if (srgb) t.colorSpace = THREE.SRGBColorSpace;
     return t;
   };
-  return { color: load('color.jpg', true), normal: load('normal.jpg', false), rough: load('rough.jpg', false) };
+  asphalt = { color: markShared(load('color.jpg', true)), normal: markShared(load('normal.jpg', false)), rough: markShared(load('rough.jpg', false)) };
+  return asphalt;
 }
 
 function roadMaterial(halfWidth: number, biome: Biome, turn = false) {
@@ -124,7 +130,7 @@ interface Strip {
   grade: ArrayLike<number>;
 }
 
-export class Road extends THREE.Group {
+export class Road extends WorldGroup {
   constructor(route: Route, halfWidth: number, biome: Biome = ALPINE) {
     super();
     const mat = roadMaterial(halfWidth, biome);

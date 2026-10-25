@@ -9,6 +9,7 @@ import { patchMaterial } from './atmosphere.ts';
 import { loadModel } from './Landmarks.ts';
 import { mergeColored } from './Road.ts';
 import type { Biome } from './biome.ts';
+import { markShared, WorldGroup } from './dispose.ts';
 
 const POI_MODEL: Record<string, string> = {
   bench: 'prop-bench.glb',
@@ -26,7 +27,7 @@ function hash(n: number) {
   return x - Math.floor(x);
 }
 
-export class Props extends THREE.Group {
+export class Props extends WorldGroup {
   /** `models`: where the scene places its own landmark models (an OSM tower there is left to the model). */
   async build(
     route: Route, index: RouteIndex, osm: OsmWorld, groundAt: (x: number, z: number) => number, halfWidth: number, biome?: Biome,
@@ -373,10 +374,7 @@ class MedFences {
     };
     mk(this.mesh, patchMaterial(wireMaterial(), { key: 'wiremesh' }), false);
     if (this.wall_.idx.length) {
-      const t = new THREE.TextureLoader().load('/textures/med/wall.jpg');
-      t.wrapS = t.wrapT = THREE.RepeatWrapping;
-      t.colorSpace = THREE.SRGBColorSpace;
-      t.anisotropy = 8;
+      const t = fieldWallTexture();
       const stone = new THREE.MeshStandardMaterial({ map: t, color: new THREE.Color(1.5, 1.45, 1.35), roughness: 0.95, side: THREE.DoubleSide });
       mk(this.wall_, patchMaterial(stone, { key: 'fieldwall' }), true);
     }
@@ -453,4 +451,15 @@ function besideWall(b: Building, seed: number): { x: number; z: number; yaw: num
     nz = -nz;
   }
   return { x: mx + nx * 1.4, z: mz + nz * 1.4, yaw: -Math.atan2(bz - az, bx - ax) };
+}
+
+let wallTex: THREE.Texture | null = null;
+
+function fieldWallTexture() {
+  if (wallTex) return wallTex;
+  const t = new THREE.TextureLoader().load('/textures/med/wall.jpg');
+  t.wrapS = t.wrapT = THREE.RepeatWrapping;
+  t.colorSpace = THREE.SRGBColorSpace;
+  t.anisotropy = 8;
+  return (wallTex = markShared(t));
 }

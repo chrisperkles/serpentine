@@ -8,6 +8,7 @@ import * as THREE from 'three';
 import type { Route } from '../geo/route.ts';
 import { patchMaterial } from './atmosphere.ts';
 import type { Biome } from './biome.ts';
+import { WorldGroup } from './dispose.ts';
 
 const WARN_RADIUS = 40; // bends tighter than this get a warning sign
 const WARN_DIST = 80; // m before the bend
@@ -242,7 +243,7 @@ function plateMesh(plates: Plate[]): THREE.Mesh | null {
   return m;
 }
 
-export class Signs extends THREE.Group {
+export class Signs extends WorldGroup {
   constructor(
     route: Route,
     halfWidth: number,
