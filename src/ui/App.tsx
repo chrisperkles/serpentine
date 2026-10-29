@@ -11,9 +11,14 @@ import { findSegments, stravaToSegments, type Segment } from '../sim/segments.ts
 import { fetchStravaSegments, getStravaStatus } from '../sim/stravaApi.ts';
 import { RideSession } from '../sim/session.ts';
 import { rideStats } from '../sim/stats.ts';
-import { bestRideFor, deleteRide, getRide, listCustomRoutes, listRides, loadSettings, saveRide, saveSettings, type AppSettings } from '../sim/storage.ts';
+import {
+  bestRideFor, deleteRide, getRide, listCustomRoutes, listCustomWorkouts, listRides, loadSettings, saveRide, saveSettings, type AppSettings,
+} from '../sim/storage.ts';
+import { intervalFeedback } from '../training/feedback.ts';
+import { resolveWorkout } from '../training/resolve.ts';
 import type { RideRecord } from '../sim/types.ts';
 import { clearUnfinished, loadUnfinished, saveUnfinished, type UnfinishedRide } from '../sim/unfinished.ts';
+import { loadQueue, NEXT_COUNTDOWN, saveQueue, type QueuedRoute } from '../sim/queue.ts';
 import { LIBRARY } from '../workouts/index.ts';
 import { fmtTime } from './format.ts';
 import { Home, type HomeTab, type StartRequest } from './Home.tsx';
@@ -26,6 +31,13 @@ import { profileFromCoords, type ProfileData } from './profile.ts';
 import { Summary, type SummaryData } from './Summary.tsx';
 
 type Screen = 'home' | 'loading' | 'ride' | 'summary' | 'detail';
+
+/** The next queued route, offered at the end of the current one; it loads when the ride clock reaches `until`. */
+interface UpNext {
+  session: RideSession;
+  route: RouteData;
+  until: number;
+}
 
 interface Ride {
   session: RideSession;
@@ -64,6 +76,22 @@ export function App() {
   const [audio] = useState(() => new RideAudio());
   const settingsRef = useRef(settings);
   settingsRef.current = settings;
+  const [queue, setQueueState] = useState<QueuedRoute[]>(loadQueue);
+  const queueRef = useRef(queue);
+  const [upNext, setUpNextState] = useState<UpNext | null>(null);
+  const upNextRef = useRef<UpNext | null>(null);
+  /** Routes saved earlier in a queued ride, for the summary of the last one. */
+  const chainRef = useRef<string[]>([]);
+
+  const setQueue = (q: QueuedRoute[]) => {
+    queueRef.current = q;
+    setQueueState(q);
+    saveQueue(q);
+  };
+  const setUpNext = (u: UpNext | null) => {
+    upNextRef.current = u;
+    setUpNextState(u);
+  };
 
   useEffect(() => {
     const e = new Engine(canvasRef.current!, settingsRef.current.quality);
@@ -177,6 +205,13 @@ export function App() {
     saveSettings(s);
   };
 
+  /** One line on how a workout's hard intervals went (training/feedback.ts). */
+  const feedbackFor = async (rec: RideRecord): Promise<string | undefined> => {
+    if (!rec.workoutId) return undefined;
+    const w = resolveWorkout(rec.workoutId, rec.ftp, await listCustomWorkouts().catch(() => []));
+    return (w && intervalFeedback(rec, w)) || undefined;
+  };
+
   /** Save a ride to history (under 30 s it is dropped) and forget its unfinished copy. */
   const storeRide = async (rec: RideRecord, summitTime: number | null): Promise<SummaryData> => {
     const stats = rideStats(rec.samples, rec.ftp);
@@ -205,17 +240,26 @@ export function App() {
     }
     await clearUnfinished();
     setUnfinished(null);
-    return { record: rec, stats, summitTime, previousBest: prev?.summary.summitTime ?? null };
+    return { record: rec, stats, summitTime, previousBest: prev?.summary.summitTime ?? null, feedback: await feedbackFor(rec) };
   };
 
   /**
    * Load the world and start a ride. `opts` is for test starts (?ride=…) and for carrying on an unfinished
    * ride; both say whether to ride the lead-in instead of following the setting.
    */
-  const start = async (req: StartRequest, opts?: { at?: number; cam?: CameraMode; go?: boolean; leadIn?: boolean; resume?: UnfinishedRide }) => {
+  const start = async (
+    req: StartRequest,
+    opts?: {
+      at?: number; cam?: CameraMode; go?: boolean; leadIn?: boolean; resume?: UnfinishedRide;
+      /** Started by the queue: the summary of the last route lists the ones before; a running workout carries on. */
+      chained?: boolean; workoutFrom?: number;
+    },
+  ) => {
     if (!engine) return;
     const cfg = settingsRef.current;
     lastStart.current = req;
+    setUpNext(null);
+    if (!opts?.chained) chainRef.current = [];
     // a new ride from Home keeps an unfinished one in history rather than overwriting it
     if (!opts) {
       const pending = await loadUnfinished();
@@ -266,6 +310,7 @@ export function App() {
         (cfg.stravaKom || cfg.stravaPr) && stravaOnly.length
           ? (stravaOnly.find((g) => g.strava!.id === cfg.stravaPacerSegment) ?? stravaOnly.reduce((a, b) => (b.end - b.start > a.end - a.start ? b : a)))
           : null;
+      await engine.setSegments(segments, pacerSeg?.id ?? null);
       prefetchAbort.current?.abort();
       prefetchAbort.current = new AbortController();
       const p0 = route;
@@ -286,6 +331,7 @@ export function App() {
           segmentBests,
           bots: cfg.bots,
           pacers: pacerSeg ? { segmentId: pacerSeg.id, kom: cfg.stravaKom, pr: cfg.stravaPr } : undefined,
+          workoutFrom: opts?.workoutFrom,
         },
         hub,
       );
@@ -306,6 +352,7 @@ export function App() {
         else if (e === 'segment-pr') audio.segmentEnd(true);
         else if (e === 'segment-end') audio.segmentEnd(false);
         else if (e === 'lap' || e === 'ramp-done') audio.segmentEnd(true);
+        else if (e === 'route-end') offerNext(session);
       });
       engine.setOnFrame((dt) => {
         if (session.state.status === 'ready') {
@@ -317,6 +364,8 @@ export function App() {
         }
         session.tick(dt);
         const st = session.state;
+        const next = upNextRef.current;
+        if (next?.session === session && st.elapsed >= next.until) void goNext(next, req.holdWatts);
         engine.riderS = st.s;
         engine.riderDir = st.dir;
         engine.riderSpeed = st.speed;
@@ -373,12 +422,60 @@ export function App() {
     return { record: rec, stats: rideStats(rec.samples, rec.ftp), summitTime, previousBest: null, unsaved: true };
   };
 
+  /** At the end of a route: offer the next queued one. A running workout carries on there. */
+  const offerNext = (session: RideSession) => {
+    const next = queueRef.current[0];
+    if (!next || upNextRef.current?.session === session) return;
+    void routeDataFor(next.id).then((route) => {
+      if (session.state.status === 'finished') return;
+      if (!route) {
+        // a custom route that was removed meanwhile
+        setQueue(queueRef.current.filter((q) => q.id !== next.id));
+        return;
+      }
+      setUpNext({ session, route, until: session.state.elapsed + NEXT_COUNTDOWN });
+    });
+  };
+
+  /** Save this ride and start the next queued route; the rider keeps pedalling through the loading screen. */
+  const goNext = async (next: UpNext, holdWatts: number | null) => {
+    if (!engine || upNextRef.current !== next) return;
+    setUpNext(null);
+    const { workout } = next.session;
+    const ws = next.session.state;
+    const carry = workout && ws.workout && !ws.workout.done ? ws.workoutElapsed : null;
+    const rec = next.session.finish();
+    const summitTime = next.session.summitTime;
+    engine.setOnFrame(undefined);
+    try {
+      await storeRide(rec, summitTime);
+    } catch (e) {
+      // the queue stops here: the summary offers Save again
+      setSummary(unsavedSummary(rec, summitTime, e));
+      engine.unloadWorld();
+      engine.paused = true;
+      setRide(null);
+      setScreen('summary');
+      return;
+    }
+    chainRef.current = [...chainRef.current, rec.name];
+    setQueue(queueRef.current.filter((q) => q.id !== next.route.id));
+    setRide(null);
+    await start(
+      { route: next.route, workout: carry !== null ? workout : null, holdWatts },
+      { leadIn: settingsRef.current.leadIn, chained: true, workoutFrom: carry ?? undefined },
+    );
+  };
+
   const end = async () => {
     if (!ride || !engine) return;
+    setUpNext(null);
     const rec = ride.session.finish();
     const summitTime = ride.session.summitTime;
     engine.setOnFrame(undefined);
-    setSummary(await storeRide(rec, summitTime).catch((e: unknown) => unsavedSummary(rec, summitTime, e)));
+    const stored = await storeRide(rec, summitTime).catch((e: unknown) => unsavedSummary(rec, summitTime, e));
+    setSummary(chainRef.current.length ? { ...stored, earlier: chainRef.current } : stored);
+    chainRef.current = [];
     prefetchAbort.current?.abort();
     audio.update(0.1, { speed: 0, power: 0, cadence: 0, grade: 0, altitude: 0, forest: 0, urban: 0, sea: 0, biome: 'alpine', descending: false });
     engine.unloadWorld();
@@ -405,7 +502,9 @@ export function App() {
     const mine = (await listRides()).find((r) => r.id === id);
     const others = (await listRides()).filter((r) => r.routeId === record.routeId && r.id !== id && r.summitTime !== null && !!r.leadIn === !!mine?.leadIn);
     const prevBest = others.length ? Math.min(...others.map((r) => r.summitTime!)) : null;
-    setSummary({ record, stats: rideStats(record.samples, record.ftp), summitTime: mine?.summitTime ?? null, previousBest: prevBest });
+    setSummary({
+      record, stats: rideStats(record.samples, record.ftp), summitTime: mine?.summitTime ?? null, previousBest: prevBest, feedback: await feedbackFor(record),
+    });
     setScreen('detail');
   };
 
@@ -482,6 +581,8 @@ export function App() {
             onTab={setHomeTab}
             onOpenRide={(id) => void openRide(id)}
             notice={unfinishedCard}
+            queue={queue}
+            onQueue={setQueue}
           />
           {error && (
             <div className="toast error" role="alert" onClick={() => setError(null)}>
@@ -505,6 +606,10 @@ export function App() {
           hairpins={ride.hairpins}
           ghostLabel={ride.ghostLabel}
           onEnd={() => void end()}
+          queued={queue[0]?.name ?? null}
+          upNext={upNext?.session === ride.session ? { name: upNext.route.name, until: upNext.until } : null}
+          onNextNow={() => upNext && void goNext(upNext, lastStart.current?.holdWatts ?? null)}
+          onStay={() => setUpNext(null)}
         />
       )}
       {screen === 'ride' && <BatteryWarning battery={battery} audio={audio} />}

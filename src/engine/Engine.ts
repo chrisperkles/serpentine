@@ -34,6 +34,8 @@ import { Ocean } from './Ocean.ts';
 import { Props } from './Props.ts';
 import { Life } from './Life.ts';
 import { loadBakedTrees, type BakedTrees } from '../geo/trees.ts';
+import type { Segment } from '../sim/segments.ts';
+import { loadMarkFonts, SegmentMarks } from './SegmentMarks.ts';
 
 export type Quality = 'low' | 'medium' | 'high';
 
@@ -62,6 +64,7 @@ interface World {
   tunnels: Tunnels;
   ocean: Ocean | null;
   signs: Signs | null;
+  marks: SegmentMarks | null;
 }
 
 const QUALITY = {
@@ -355,6 +358,7 @@ export class Engine {
       // coastal routes: open sea to the horizon beyond the streamed terrain
       ocean: route.minEle < 40 ? new Ocean() : null,
       signs: null,
+      marks: null,
     };
     this.scene.add(world.tunnels);
     if (world.ocean) this.scene.add(world.ocean);
@@ -649,6 +653,10 @@ export class Engine {
       });
     if (w.roadside) this.scene.remove(w.roadside);
     if (w.signs) this.scene.remove(w.signs);
+    if (w.marks) {
+      this.scene.remove(w.marks);
+      w.marks.dispose();
+    }
     this.scene.remove(w.props, w.life, w.tunnels);
     if (w.ocean) {
       this.scene.remove(w.ocean);
@@ -661,6 +669,20 @@ export class Engine {
     [w.road, w.rider, w.ghost, w.trees, w.buildings, w.roadside, w.signs].forEach((o) => o && dispose(o));
     w.landmarks.clear();
     this.world = null;
+  }
+
+  /** Arches, road paint and countdown boards for the ride's segments; `featured` is the Strava segment the pacers race. */
+  async setSegments(segments: Segment[], featured: string | null = null) {
+    const w = this.world;
+    if (!w) return;
+    await loadMarkFonts();
+    if (this.world !== w) return;
+    if (w.marks) {
+      this.scene.remove(w.marks);
+      w.marks.dispose();
+    }
+    w.marks = new SegmentMarks(w.route, segments, featured, w.halfWidth, (x, z) => w.terrain.groundHeight(x, z));
+    this.scene.add(w.marks);
   }
 
   /** Pacer riders with name tags, one per W/kg value; `labels` overrides a tag's text (e.g. "KOM 17:52"). */

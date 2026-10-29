@@ -41,6 +41,8 @@ export interface SessionConfig {
   bots?: number[];
   /** Ghost riders that race a Strava segment at KOM pace and / or at your PR pace. */
   pacers?: { segmentId: string; kom: boolean; pr: boolean };
+  /** Seconds into the workout to start at: a queued route carries on the workout of the route before. */
+  workoutFrom?: number;
 }
 
 export interface BotState {
@@ -79,7 +81,8 @@ export interface LiveSegment {
 export const GEAR_RATIOS = ZWIFT_RATIOS;
 export const NEUTRAL_GEAR = 12;
 
-export type SessionEvent = 'summit' | 'lap' | 'segment-start' | 'segment-pr' | 'segment-end' | 'ramp-done';
+/** 'route-end': the rider reached the end of the route (the top, or the line of a loop), each time. */
+export type SessionEvent = 'summit' | 'lap' | 'route-end' | 'segment-start' | 'segment-pr' | 'segment-end' | 'ramp-done';
 
 export interface Banner {
   text: string;
@@ -160,6 +163,7 @@ const LEAD_IN_BLEND = 200;
 export class RideSession {
   readonly route: Route;
   readonly workout: Workout | null;
+  private readonly workoutFrom: number;
   readonly settings: RiderSettings;
   private hub: DeviceHub;
   private ghost: RideRecord | null;
@@ -187,6 +191,7 @@ export class RideSession {
   constructor(cfg: SessionConfig, hub: DeviceHub) {
     this.route = cfg.route;
     this.workout = cfg.workout;
+    this.workoutFrom = cfg.workoutFrom ?? 0;
     this.settings = cfg.settings;
     this.ghost = cfg.ghost;
     this.hub = hub;
@@ -201,8 +206,8 @@ export class RideSession {
     this.st = {
       status: 'ready', elapsed: 0, movingTime: 0, s: 0, dir: 1, lap: 1, distance: 0, speed: 0,
       power: 0, power3s: 0, cadence: 0, heartRate: null, grade: p0.grade, ele: p0.ele, gain: 0, vam: null,
-      avgPower: 0, np: 0, kj: 0, workout: cfg.workout ? stateAt(cfg.workout, 0, cfg.settings.ftp) : null,
-      workoutElapsed: 0, erg: (cfg.erg && !!cfg.workout) || cfg.holdWatts !== null, targetPower: null, trainerMode: 'idle',
+      avgPower: 0, np: 0, kj: 0, workout: cfg.workout ? stateAt(cfg.workout, cfg.workoutFrom ?? 0, cfg.settings.ftp) : null,
+      workoutElapsed: cfg.workoutFrom ?? 0, erg: (cfg.erg && !!cfg.workout) || cfg.holdWatts !== null, targetPower: null, trainerMode: 'idle',
       ghostS: cfg.ghost ? 0 : null, ghostDir: 1, ghostGap: null, summitTime: null, banner: null,
       difficulty: cfg.settings.difficulty,
       gear: cfg.gears ? startGear : null,
@@ -402,6 +407,7 @@ export class RideSession {
         this.laps.push(this.samples.length);
         this.banner(`Lap ${st.lap}`, `${fmtTime(st.elapsed)} so far`, 4);
         this.fire('lap');
+        this.fire('route-end');
       }
     } else {
       st.s = mv.s;
@@ -411,6 +417,7 @@ export class RideSession {
         this.banner('Summit', `${Math.round(route.maxEle)} m in ${fmtTime(st.elapsed)}. Round the top and back down.`, 7);
         this.fire('summit');
       }
+      if (mv.enteredEnd) this.fire('route-end');
       if (mv.turned === 'end') {
         st.lap++;
         this.laps.push(this.samples.length);
@@ -528,7 +535,8 @@ export class RideSession {
     }
     // runs can overlap (a Strava segment inside the full climb)
     for (const seg of this.segments) {
-      if (prevS < seg.start && st.s >= seg.start && !this.segRuns.some((r) => r.seg.id === seg.id)) {
+      // <= : a segment from the route's start (s = 0, the full climb without the lead-in) starts on the first metre
+      if (prevS <= seg.start && st.s > seg.start && !this.segRuns.some((r) => r.seg.id === seg.id)) {
         this.segRuns.push({ seg, t0: st.elapsed, power: 0, n: 0 });
         const sub = `${((seg.end - seg.start) / 1000).toFixed(1)} km at ${seg.avgGrade.toFixed(1)} %`;
         this.banner(seg.name, seg.strava ? `${sub}, from Strava` : sub, 3);
@@ -651,6 +659,7 @@ export class RideSession {
       segments: this.efforts,
       rampFtp: this.st.rampFtp ?? undefined,
       leadIn: this.route.leadIn > 0 ? Math.round(this.route.leadIn) : undefined,
+      workoutFrom: this.workoutFrom || undefined,
     };
   }
 

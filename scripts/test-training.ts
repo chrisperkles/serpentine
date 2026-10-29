@@ -1,7 +1,12 @@
 import assert from 'node:assert/strict';
 import { LIBRARY } from '../src/workouts/index.ts';
 import { RAMP_TEST_ID, buildRampTest, ftpFromRamp, rampFailure } from '../src/training/rampTest.ts';
-import { PLAN_TEMPLATES, completion, entryFor, nextMonday, schedule, weekday, type ActivePlan } from '../src/training/plans.ts';
+import { PLAN_TEMPLATES, completion, entryFor, nextMonday, planForGoal, schedule, weekday, type ActivePlan } from '../src/training/plans.ts';
+import { adapt, trainingLoad } from '../src/training/adapt.ts';
+import { intervalFeedback } from '../src/training/feedback.ts';
+import { pickRoutes, rideTime } from '../src/training/routeFit.ts';
+import type { RideRecord } from '../src/sim/types.ts';
+import type { Workout } from '../src/workouts/types.ts';
 import { resolveWorkout } from '../src/training/resolve.ts';
 
 const near = (a: number, b: number, eps = 1e-6) => assert.ok(Math.abs(a - b) <= eps, `${a} !~ ${b}`);
@@ -157,6 +162,143 @@ const near = (a: number, b: number, eps = 1e-6) => assert.ok(Math.abs(a - b) <= 
   const long = completion(entries, [{ start: at(last.date), duration: 25 * 60, workoutId: 'free' }], '2026-12-31');
   assert.equal(long.get(last.date), 'done');
   assert.equal(completion(entries, [], '2026-10-01').get('2026-10-13'), 'planned');
+}
+
+// 7. adaptive plan (training/adapt.ts): FTP builder from Mon 12 Oct; week 2 = Tue sweet-spot-2x20, Thu endurance-60,
+// Sat sweet-spot-ladder, Sun easy-spin
+{
+  const t = PLAN_TEMPLATES.find((x) => x.id === 'ftp-builder')!;
+  const plan: ActivePlan = { templateId: 'ftp-builder', start: '2026-10-12' };
+  const at = (d: string, h = 18) => new Date(`${d}T${String(h).padStart(2, '0')}:00:00`).getTime();
+  const res = (id: string) => resolveWorkout(id, 250);
+  // week 1 ridden as planned, moderate load
+  const week1 = [
+    { start: at('2026-10-12'), workoutId: 'ramp-test', tss: 30 },
+    { start: at('2026-10-14'), workoutId: 'endurance-60', tss: 40 },
+    { start: at('2026-10-15'), workoutId: 'sweet-spot-3x12', tss: 69 },
+    { start: at('2026-10-17'), workoutId: 'endurance-base', tss: 60 },
+    { start: at('2026-10-18'), workoutId: 'recovery-30', tss: 11 },
+  ];
+
+  // a missed hard session moves to the next free day that isn't next to a hard one
+  const wed = adapt(plan, t, week1, '2026-10-21', res);
+  assert.equal(wed.active.changes?.['2026-10-21']?.workoutId, 'sweet-spot-2x20');
+  assert.match(wed.active.changes!['2026-10-21'].why, /Moved from Tuesday/);
+  const e = entryFor(wed.active, t, '2026-10-21')!;
+  assert.equal(e.day.workoutId, 'sweet-spot-2x20');
+  assert.equal(e.changed?.from, null);
+  assert.ok(schedule(wed.active, t).some((x) => x.date === '2026-10-21'));
+
+  // ridden on Wednesday: the change stays for History and the day counts as done, nothing moves again
+  const rodeWed = [...week1, { start: at('2026-10-21'), workoutId: 'sweet-spot-2x20', tss: 74 }];
+  const thu = adapt(wed.active, t, rodeWed, '2026-10-22', res);
+  assert.equal(thu.active.changes?.['2026-10-21']?.workoutId, 'sweet-spot-2x20');
+  assert.equal(Object.keys(thu.active.changes ?? {}).length, 1);
+  assert.equal(completion(schedule(thu.active, t), rodeWed, '2026-10-22').get('2026-10-21'), 'done');
+
+  // no free day left that isn't next to Saturday's hard session: left out, with a note
+  const fri = adapt(plan, t, week1, '2026-10-23', res);
+  assert.equal(fri.active.changes, undefined);
+  assert.match(fri.notes[0], /Tuesday's Sweet Spot 2x20 is left out/);
+
+  // an unplanned hard ride on Friday: Saturday's hard session becomes endurance
+  const rodeTue = [...week1, { start: at('2026-10-20'), workoutId: 'sweet-spot-2x20', tss: 74 }];
+  const extra = adapt(plan, t, [...rodeTue, { start: at('2026-10-23'), tss: 120 }], '2026-10-23', res);
+  assert.equal(extra.active.changes?.['2026-10-24']?.workoutId, 'endurance-60');
+  assert.match(extra.active.changes!['2026-10-24'].why, /today's hard ride \(TSS 120\)/);
+  // the planned session ridden hard is not extra
+  assert.equal(adapt(plan, t, [...rodeTue, { start: at('2026-10-22'), workoutId: 'endurance-60', tss: 95 }], '2026-10-23', res).active.changes, undefined);
+
+  // a block of very hard days on little history: recovery before the next hard session
+  const block = ['2026-10-19', '2026-10-20', '2026-10-21', '2026-10-22', '2026-10-23'].map((d) => ({ start: at(d), tss: 160 }));
+  const tired = adapt(plan, t, block, '2026-10-23', res);
+  assert.ok(tired.form.form < -25, `form ${tired.form.form}`);
+  assert.equal(tired.active.changes?.['2026-10-24']?.workoutId, 'recovery-30');
+  // tired: the missed Tuesday session is not moved
+  assert.ok(!Object.values(tired.active.changes ?? {}).some((c) => c.workoutId === 'sweet-spot-2x20'));
+
+  // fitness and fatigue settle on a steady daily load
+  const steady = Array.from({ length: 180 }, (_, i) => ({ start: at('2026-04-01') + i * 86400000, tss: 100 }));
+  const load = trainingLoad(steady, '2026-09-27');
+  assert.ok(load.fitness > 95 && load.fitness < 100, `fitness ${load.fitness}`);
+  assert.ok(Math.abs(load.fatigue - 100) < 0.5, `fatigue ${load.fatigue}`);
+  assert.deepEqual(trainingLoad([], '2026-10-01'), { fitness: 0, fatigue: 0, form: 0 });
+}
+
+// 8. a plan towards an event: it ends in the event's week, easy the day before, nothing from the day on
+{
+  const t = PLAN_TEMPLATES.find((x) => x.id === 'ftp-builder')!;
+  const goal = { name: 'Gaisbergrennen', date: '2026-12-13' };
+  const early = planForGoal(t, goal, '2026-10-29');
+  assert.deepEqual(early, { templateId: 'ftp-builder', start: '2026-11-02', goal });
+  const s = schedule(early, t);
+  assert.equal(s[0].date, '2026-11-02');
+  assert.equal(s[s.length - 1].date, '2026-12-12');
+  assert.equal(s[s.length - 1].day.workoutId, 'easy-spin'); // was recovery-30 the day before
+  assert.match(s[s.length - 1].day.note!, /before Gaisbergrennen/);
+  assert.equal(entryFor(early, t, '2026-12-13'), null); // the ramp test on event day is gone
+  // joined late: starts today, the weeks still count from the Monday that ends in the event's week
+  const late = planForGoal(t, goal, '2026-11-18');
+  assert.equal(late.start, '2026-11-18');
+  assert.equal(late.weekZero, '2026-11-02');
+  assert.equal(entryFor(late, t, '2026-11-24')?.day.workoutId, 'easy-spin'); // week 4 (Recovery week), Tuesday
+  assert.equal(entryFor(late, t, '2026-11-17'), null); // before joining
+}
+
+// 9. which route covers a session: ride time from the profile at the session's power
+{
+  const prof = (km: number, grade: number) => {
+    const dist: number[] = [], ele: number[] = [];
+    for (let d = 0; d <= km * 1000; d += 50) {
+      dist.push(d);
+      ele.push(500 + (d * grade) / 100);
+    }
+    return { dist, ele };
+  };
+  const flat = rideTime(prof(10, 0), 200, 80);
+  assert.ok(flat > 900 && flat < 1300, `flat ${flat}`);
+  const climb = rideTime(prof(10, 7), 250, 80);
+  assert.ok(climb > 1800 && climb < 3000, `climb ${climb}`);
+  const opts = [
+    { id: 'short', name: 'Short climb', category: 'climb', profile: prof(4, 7) },
+    { id: 'long', name: 'Long climb', category: 'climb', profile: prof(12, 7) },
+    { id: 'flat', name: 'Flat loop', category: 'flat', profile: prof(15, 0) },
+  ];
+  const t = (id: string) => rideTime(opts.find((o) => o.id === id)!.profile, 250, 80);
+  assert.deepEqual(pickRoutes(opts, t('short') * 1.05, 250, 80, 'climb')?.ids, ['short']);
+  assert.deepEqual(pickRoutes(opts, t('short') * 2, 250, 80, 'climb')?.ids, ['long']);
+  // longer than any one climb: the long one, then the short one queued
+  const pair = pickRoutes(opts, t('long') + t('short') * 0.8, 250, 80, 'climb')!;
+  assert.deepEqual(pair.ids, ['long', 'short']);
+  assert.deepEqual(pickRoutes(opts, 600, 250, 80, 'flat')?.ids, ['flat']);
+  assert.equal(pickRoutes([], 600, 250, 80), null);
+}
+
+// 10. one line of feedback on the hard intervals
+{
+  const w: Workout = {
+    id: 'test-2x4', name: '2x4', category: 'threshold', messages: [], duration: 1200, tss: 50, intensityFactor: 0.85, source: 'builtin',
+    steps: [
+      { kind: 'warmup', duration: 300, start: 0.5, end: 0.6 },
+      { kind: 'on', duration: 240, start: 1, end: 1 },
+      { kind: 'off', duration: 120, start: 0.5, end: 0.5 },
+      { kind: 'on', duration: 240, start: 1, end: 1 },
+      { kind: 'cooldown', duration: 300, start: 0.6, end: 0.4 },
+    ],
+  };
+  const ride = (second: number, from = 0, len = 1200): RideRecord => ({
+    id: 'r', name: 'x', routeId: 'x', workoutId: w.id, start: 0, laps: [], ftp: 250, weight: 75, workoutFrom: from || undefined,
+    samples: Array.from({ length: len }, (_, i) => {
+      const at = i + from;
+      return { t: i * 1000, lat: 0, lon: 0, alt: 0, distance: 0, speed: 8, power: at >= 660 && at < 900 ? second : 250 };
+    }),
+  });
+  assert.equal(intervalFeedback(ride(250), w), 'On target in both intervals.');
+  assert.match(intervalFeedback(ride(220), w)!, /^Interval 2 faded to 88 %/);
+  assert.equal(intervalFeedback(ride(290), w), 'Both intervals at 108 % of target on average.');
+  // a queued route carried the workout on from second 600: only the second interval is in this ride
+  assert.equal(intervalFeedback(ride(250, 600, 600), w), 'On target in 1 of 2 intervals.');
+  assert.equal(intervalFeedback({ ...ride(250), workoutId: 'other' }, w), null);
 }
 
 console.log('training tests passed');

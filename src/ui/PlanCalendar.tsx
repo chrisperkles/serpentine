@@ -1,5 +1,5 @@
 import { useEffect, useMemo } from 'react';
-import { addDays, completion, mondayOf, schedule, weekIndex, type ActivePlan, type DayStatus, type PlanRide, type PlanTemplate } from '../training/plans.ts';
+import { addDays, completion, firstMonday, schedule, weekIndex, type ActivePlan, type DayStatus, type PlanRide, type PlanTemplate } from '../training/plans.ts';
 import { resolveWorkout } from '../training/resolve.ts';
 import type { Workout } from '../workouts/types.ts';
 
@@ -29,7 +29,7 @@ export function PlanCalendar({ active, template, ftp, rides, custom = [], today,
   const status = useMemo(() => completion(entries, rides, today), [entries, rides, today]);
   const byDate = useMemo(() => new Map(entries.map((e) => [e.date, e])), [entries]);
   const weeks = entries.length ? entries[entries.length - 1].week + 1 : 0;
-  const monday = mondayOf(active.start);
+  const monday = firstMonday(active);
   const current = weekIndex(active, today);
 
   useEffect(() => {
@@ -46,6 +46,7 @@ export function PlanCalendar({ active, template, ftp, rides, custom = [], today,
             <h2>{template.name}</h2>
             <p className="muted">
               Starts {shortDate(active.start)}, {template.hoursPerWeek} per week
+              {active.goal ? `, towards ${active.goal.name} on ${shortDate(active.goal.date)}` : ''}
             </p>
           </div>
           <button className="btn ghost small" onClick={onClose}>
@@ -76,8 +77,8 @@ export function PlanCalendar({ active, template, ftp, rides, custom = [], today,
                   return (
                     <button
                       key={di}
-                      className={`plan-cal-day ${st}`}
-                      title={e.day.note}
+                      className={`plan-cal-day ${st}${e.changed ? ' changed' : ''}`}
+                      title={[e.changed?.why, e.day.note].filter(Boolean).join(' ') || undefined}
                       onClick={() => {
                         onPickWorkout(e.day.workoutId);
                         onClose();

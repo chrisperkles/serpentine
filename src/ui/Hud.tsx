@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState, type CSSProperties } from 'react';
+import { useEffect, useMemo, useRef, useState, type CSSProperties } from 'react';
 import { hub } from '../devices/index.ts';
 import { CAMERA_MODES, type CameraMode } from '../engine/CameraRig.ts';
 import type { RideAudio } from '../audio/RideAudio.ts';
@@ -19,6 +19,10 @@ export function Hud({
   hairpins,
   ghostLabel,
   onEnd,
+  queued,
+  upNext,
+  onNextNow,
+  onStay,
 }: {
   session: RideSession;
   engine: Engine;
@@ -27,6 +31,12 @@ export function Hud({
   hairpins: number[];
   ghostLabel: string | null;
   onEnd: () => void;
+  /** The next route in the queue, ridden after this one. */
+  queued: string | null;
+  /** Offered at the end of the route: loads when the ride clock reaches `until`. */
+  upNext: { name: string; until: number } | null;
+  onNextNow: () => void;
+  onStay: () => void;
 }) {
   const st = useSession(session);
   const { controllable, devices } = useHub();
@@ -36,6 +46,9 @@ export function Hud({
   const workout = session.workout;
   const [hidden, setHidden] = useState(false);
   const [confirmEnd, setConfirmEnd] = useState(false);
+  // read by the key and button handlers, which are bound once per ride
+  const next = useRef({ upNext, onNextNow, onStay });
+  next.current = { upNext, onNextNow, onStay };
 
   const profile = useMemo(() => {
     const dist = new Float32Array(route.n);
@@ -53,6 +66,11 @@ export function Hud({
     const onKey = (e: KeyboardEvent) => {
       if ((e.target as HTMLElement)?.tagName === 'INPUT') return;
       const s = session.state;
+      if (next.current.upNext && (e.key === 'n' || e.key === 's')) {
+        if (e.key === 'n') next.current.onNextNow();
+        else next.current.onStay();
+        return;
+      }
       switch (e.key) {
         case ' ':
           e.preventDefault();
@@ -119,6 +137,12 @@ export function Hud({
     // Zwift Ride: left hood shifts easier, right hood harder
     const offButton = hub.onButton((b) => {
       const s = session.state;
+      // while the next route is offered: A goes now, B stays on this one
+      if (next.current.upNext && (b === 'a' || b === 'b')) {
+        if (b === 'a') next.current.onNextNow();
+        else next.current.onStay();
+        return;
+      }
       switch (b) {
         case 'shiftUpR': case 'shiftDnR': case 'powerUpR':
           feedback(session.shift(1), 1);
@@ -293,6 +317,7 @@ export function Hud({
           <div className="summit">
             {toClimb !== null && <span className="lead-in">Easy lead-in, climb in {km(toClimb)} km</span>}
             {route.category === 'climb' && st.dir === -1 && <span>Descending</span>}
+            {queued && !upNext && <span className="queued">Then {queued}</span>}
           </div>
         </div>
         {st.bots.some((b) => b.active !== false) && (
@@ -376,6 +401,24 @@ export function Hud({
         <div className="banner" key={st.banner.text}>
           <span className="b-main">{st.banner.text}</span>
           {st.banner.sub && <span className="b-sub">{st.banner.sub}</span>}
+        </div>
+      )}
+
+      {upNext && (
+        <div className="up-next" role="status">
+          <span className="un-label">Next route</span>
+          <span className="un-name">{upNext.name}</span>
+          <span className="un-time">
+            {st.status === 'paused' ? 'when you ride on' : `in ${Math.max(0, Math.ceil(upNext.until - st.elapsed))} s`}
+          </span>
+          <div className="un-actions">
+            <button className="btn" onClick={onNextNow}>
+              Go now <kbd>N</kbd>
+            </button>
+            <button className="btn ghost" onClick={onStay}>
+              Stay here <kbd>S</kbd>
+            </button>
+          </div>
         </div>
       )}
 

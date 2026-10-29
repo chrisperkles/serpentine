@@ -23,16 +23,39 @@ export interface PlanTemplate {
   weeks: PlanWeek[];
 }
 
+/** A session the plan moved or swapped (training/adapt.ts). */
+export interface PlanChange {
+  /** What to ride that day instead; null takes the session out. */
+  workoutId: string | null;
+  terrain?: PlanTerrain;
+  /** Why, in a sentence the rider sees. */
+  why: string;
+}
+
+export interface Goal {
+  name: string;
+  /** ISO date of the event. */
+  date: string;
+}
+
 export interface ActivePlan {
   templateId: string;
   /** ISO date (YYYY-MM-DD). A Monday for "start on Monday"; any day for "start today". */
   start: string;
+  /** Monday of the plan's first week, when the plan was joined mid-way to end in an event's week. */
+  weekZero?: string;
+  /** The event the plan builds to: the plan ends in its week, easy the day before, nothing from the day on. */
+  goal?: Goal;
+  /** Moved and swapped sessions by date. Past ones stay as they were, so History keeps what was planned. */
+  changes?: Record<string, PlanChange>;
 }
 
 export interface PlanEntry {
   date: string;
   week: number;
   day: PlanDay;
+  /** The plan changed this day: what it said before (null: a rest day) and why. */
+  changed?: { from: string | null; why: string };
 }
 
 export type DayStatus = 'done' | 'missed' | 'planned' | 'today';
@@ -138,37 +161,88 @@ export function nextMonday(date: Date | string = new Date()): string {
   return addDays(iso, 7 - weekday(iso));
 }
 
-/** All planned sessions in date order. Repeating plans are expanded for a few cycles. */
-export function schedule(active: ActivePlan, template: PlanTemplate): PlanEntry[] {
-  const monday = mondayOf(active.start);
+/** Monday of the plan's first week. */
+export function firstMonday(active: ActivePlan): string {
+  return active.weekZero ?? mondayOf(active.start);
+}
+
+/** The event's rules on the template's session for a date: nothing from the event day on, easy the day before. */
+function withGoal(active: ActivePlan, e: PlanEntry | null): PlanEntry | null {
+  const g = active.goal;
+  if (!e || !g) return e;
+  if (e.date >= g.date) return null;
+  if (e.date === addDays(g.date, -1)) return { ...e, day: { day: e.day.day, workoutId: 'easy-spin', note: `Easy legs before ${g.name}.` } };
+  return e;
+}
+
+/** A stored change on top of the template's session (or rest day) for a date. */
+function withChange(active: ActivePlan, date: string, e: PlanEntry | null): PlanEntry | null {
+  const c = active.changes?.[date];
+  if (!c) return e;
+  if (c.workoutId === null) return null;
+  const day: PlanDay = { day: weekday(date) as D, workoutId: c.workoutId };
+  const terrain = c.terrain ?? e?.day.terrain;
+  if (terrain) day.terrain = terrain;
+  return { date, week: e?.week ?? weekIndex(active, date), day, changed: { from: e?.day.workoutId ?? null, why: c.why } };
+}
+
+/** The template's sessions only (and the event's rules), without moved or swapped ones: what adapt() starts from. */
+export function templateSchedule(active: ActivePlan, template: PlanTemplate): PlanEntry[] {
+  const monday = firstMonday(active);
   const total = template.repeat ? template.weeks.length * CYCLES : template.weeks.length;
   const out: PlanEntry[] = [];
   for (let w = 0; w < total; w++) {
     const week = template.weeks[w % template.weeks.length];
     for (const day of [...week.days].sort((a, b) => a.day - b.day)) {
       const date = addDays(monday, w * 7 + day.day);
-      if (date >= active.start) out.push({ date, week: w, day });
+      const e = date >= active.start ? withGoal(active, { date, week: w, day }) : null;
+      if (e) out.push(e);
     }
   }
   return out;
 }
 
-/** The session planned for a date, or null on a rest day or outside the plan. */
+/** All planned sessions in date order, changes included. Repeating plans are expanded for a few cycles. */
+export function schedule(active: ActivePlan, template: PlanTemplate): PlanEntry[] {
+  const base = templateSchedule(active, template);
+  if (!active.changes) return base;
+  const byDate = new Map(base.map((e) => [e.date, e]));
+  for (const date of Object.keys(active.changes)) {
+    const e = withChange(active, date, byDate.get(date) ?? null);
+    if (e) byDate.set(date, e);
+    else byDate.delete(date);
+  }
+  return [...byDate.values()].sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0));
+}
+
+/** The session planned for a date (changes included), or null on a rest day or outside the plan. */
 export function entryFor(active: ActivePlan, template: PlanTemplate, date: string): PlanEntry | null {
-  const monday = mondayOf(active.start);
+  const monday = firstMonday(active);
   const offset = Math.round((utc(date) - utc(monday)) / 86400000);
-  if (offset < 0 || date < active.start) return null;
-  const w = Math.floor(offset / 7);
-  if (!template.repeat && w >= template.weeks.length) return null;
-  const week = template.weeks[w % template.weeks.length];
-  const day = week.days.find((x) => x.day === offset % 7);
-  return day ? { date, week: w, day } : null;
+  let e: PlanEntry | null = null;
+  if (offset >= 0 && date >= active.start) {
+    const w = Math.floor(offset / 7);
+    if (template.repeat || w < template.weeks.length) {
+      const day = template.weeks[w % template.weeks.length].days.find((x) => x.day === offset % 7);
+      if (day) e = withGoal(active, { date, week: w, day });
+    }
+  }
+  return withChange(active, date, e);
 }
 
 /** Week index (0-based) a date falls in, or -1 before the start. */
 export function weekIndex(active: ActivePlan, date: string): number {
-  const offset = Math.round((utc(date) - utc(mondayOf(active.start))) / 86400000);
+  const offset = Math.round((utc(date) - utc(firstMonday(active))) / 86400000);
   return offset < 0 ? -1 : Math.floor(offset / 7);
+}
+
+/**
+ * A plan that ends in the event's week: its first Monday is as many weeks before as the plan is long. When that
+ * Monday has passed, the plan starts today, part way in.
+ */
+export function planForGoal(template: PlanTemplate, goal: Goal, today: string): ActivePlan {
+  const weekZero = addDays(mondayOf(goal.date), -7 * (template.weeks.length - 1));
+  return weekZero >= today ? { templateId: template.id, start: weekZero, goal } : { templateId: template.id, start: today, weekZero, goal };
 }
 
 export interface PlanRide {
@@ -176,6 +250,8 @@ export interface PlanRide {
   workoutId?: string;
   /** Seconds; rides without a duration count towards free-climb days. */
   duration?: number;
+  /** Training stress, for fitness and fatigue (training/adapt.ts). */
+  tss?: number;
 }
 
 export function completion(entries: PlanEntry[], rides: PlanRide[], today: Date | string = new Date()): Map<string, DayStatus> {

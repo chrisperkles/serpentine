@@ -1,7 +1,9 @@
 import { useEffect, useMemo, useState, type ReactNode } from 'react';
 import { TIMES } from '../../engine/atmosphere.ts';
 import { leadInLength } from '../../geo/leadIn.ts';
+import type { QueuedRoute } from '../../sim/queue.ts';
 import { getActivePlan, type AppSettings, type RideSummary } from '../../sim/storage.ts';
+import { adapt } from '../../training/adapt.ts';
 import { entryFor, isoDate, templateById } from '../../training/plans.ts';
 import type { Workout } from '../../workouts/types.ts';
 import { fmtTime, int, km } from '../format.ts';
@@ -35,6 +37,8 @@ export interface RideTabProps {
   error: string | null;
   /** Shown above the route (the unfinished-ride card). */
   notice?: ReactNode;
+  queue: QueuedRoute[];
+  onQueue: (q: QueuedRoute[]) => void;
 }
 
 export function RideTab(p: RideTabProps) {
@@ -42,13 +46,18 @@ export function RideTab(p: RideTabProps) {
   const [picker, setPicker] = useState(false);
   const [today, setToday] = useState<string | null>(null);
 
+  // today's session as the plan stands after the rides so far (moved or lighter: training/adapt.ts)
+  const { rides, workouts } = p;
   useEffect(() => {
-    void getActivePlan().then((active) => {
-      const t = active ? templateById(active.templateId) : undefined;
-      const e = active && t ? entryFor(active, t, isoDate(new Date())) : null;
-      setToday(e?.day.workoutId ?? null);
+    void getActivePlan().then((stored) => {
+      const t = stored ? templateById(stored.templateId) : undefined;
+      if (!stored || !t) return setToday(null);
+      const day = isoDate(new Date());
+      const planRides = rides.map((r) => ({ start: r.start, workoutId: r.workoutId, duration: r.duration, tss: r.tss }));
+      const { active } = adapt(stored, t, planRides, day, (id) => workouts.find((w) => w.id === id));
+      setToday(entryFor(active, t, day)?.day.workoutId ?? null);
     });
-  }, []);
+  }, [rides, workouts]);
 
   const list = p.routes.filter((r) => matchesCategory(r, cat));
   const todayWorkout = today && today !== 'free' ? p.workouts.find((w) => w.id === today) : null;
@@ -78,19 +87,33 @@ export function RideTab(p: RideTabProps) {
         </div>
         {p.error && <p className="error">{p.error}</p>}
         <ol className="route-rows">
-          {list.map((r) => (
-            <li key={r.data.id}>
-              <button className={`route-row ${r.data.id === p.route?.data.id ? 'on' : ''}`} onClick={() => p.onRoute(r.data.id)}>
-                <span className="rr-name">
-                  {r.data.name}
-                  {SHOWCASE.has(r.data.id) && !r.custom && <span className="rr-tag">Most detailed</span>}
-                </span>
-                <span className="rr-region">{r.data.region ?? (r.data.source === 'drawn' ? 'Drawn route' : 'Imported GPX')}</span>
-                <RouteStatsLine entry={r} />
-                <Profile entry={r} height={30} bins={36} className="rr-profile" />
-              </button>
-            </li>
-          ))}
+          {list.map((r) => {
+            const pos = p.queue.findIndex((q) => q.id === r.data.id);
+            return (
+              <li key={r.data.id} className="has-queue">
+                <button className={`route-row ${r.data.id === p.route?.data.id ? 'on' : ''}`} onClick={() => p.onRoute(r.data.id)}>
+                  <span className="rr-name">
+                    {r.data.name}
+                    {SHOWCASE.has(r.data.id) && !r.custom && <span className="rr-tag">Most detailed</span>}
+                  </span>
+                  <span className="rr-region">{r.data.region ?? (r.data.source === 'drawn' ? 'Drawn route' : 'Imported GPX')}</span>
+                  <RouteStatsLine entry={r} />
+                  <Profile entry={r} height={30} bins={36} className="rr-profile" />
+                </button>
+                <button
+                  className={`rr-queue ${pos >= 0 ? 'on' : ''}`}
+                  aria-pressed={pos >= 0}
+                  title={pos >= 0 ? `Number ${pos + 1} in the queue. Click to take it out` : 'Ride this next: it starts by itself at the end of the route before'}
+                  aria-label={pos >= 0 ? `Remove ${r.data.name} from the queue` : `Ride ${r.data.name} next`}
+                  onClick={() =>
+                    p.onQueue(pos >= 0 ? p.queue.filter((q) => q.id !== r.data.id) : [...p.queue, { id: r.data.id, name: r.data.name }])
+                  }
+                >
+                  {pos >= 0 ? pos + 1 : '+'}
+                </button>
+              </li>
+            );
+          })}
           {list.length === 0 && (
             <li className="muted small empty-row">
               {cat === 'mine' ? 'No routes of your own yet. Import a GPX or draw one on the map.' : 'No routes in this group.'}
@@ -348,6 +371,20 @@ function StartBar(p: RideTabProps) {
               Connect devices
             </button>
           </span>
+        )}
+        {p.queue.length > 0 && (
+          <div className="queue-line" aria-label="Queue">
+            Then
+            {p.queue.map((q) => (
+              <span key={q.id} className="queue-chip">
+                {q.name}
+                <button className="link" aria-label={`Remove ${q.name}`} onClick={() => p.onQueue(p.queue.filter((x) => x.id !== q.id))}>
+                  ×
+                </button>
+              </span>
+            ))}
+            <span className="small">At the end of each route the next one starts by itself.</span>
+          </div>
         )}
       </div>
       <button className="start" disabled={!p.route || blocked} onClick={p.onStart} title={ready ? undefined : 'You can start anyway and connect later'}>

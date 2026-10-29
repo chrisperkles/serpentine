@@ -138,6 +138,18 @@ symptom (what it looked like), cause, fix and where. Newest at the bottom of eac
   timber walls and grey metal roofs on the rest. A Blender model was built first and dropped: the ground falls 10 m
   across the footprint and a model sits at one height, while the OSM building drops its walls to the lowest corner
   like the real downhill façade. Where: `public/scenes/kitzbueheler-horn.json`.
+- **Road text crossed by the centre line ("KØM").** The painted word spanned the whole road, so the centre dashes
+  ran through the O. Fix: road text goes in the rider's lane, between the centre line and the edge line, as real
+  road text does; the lane strip's own aspect (2.3 m by 7 m) already stretches the letters about three times along
+  the road. Where: `SegmentMarks.ts` (`paintStrip` lane offsets).
+- **Finish chequer read as one thin stripe at the summit.** The band straddled the segment end, and at the end of the
+  route the second half fell off the road. Fix: at the route's end the band ends on the line. Where: `SegmentMarks.ts`.
+- **Arch feet hanging in the air or the tube showing under them.** The ballast sat at road height on verges that
+  fall away. Fix: each foot sits on `groundHeight` at its own spot, deep enough (0.75 m) that the tube never shows
+  below it on a slope. Where: `SegmentMarks.ts` `arch`.
+- **A segment starting at the route's first metre never timed** (the full climb without the lead-in). The start test
+  was `prevS < start`, and a ride starts at exactly 0. Fix: `prevS <= start && s > start`. Where: `session.ts`
+  `updateSegments`.
 
 ## Data and bakes
 
@@ -179,6 +191,12 @@ symptom (what it looked like), cause, fix and where. Newest at the bottom of eac
 - **Shots changed when the Mac went on battery.** The app's battery saver drops to 30 fps and Balanced, so frames
   stop being comparable. Capture scripts now report a charging battery (`navigator.getBattery`). A zsh loop
   also ate `:c` in `"$1:chase"` (a path modifier): write `"${1}:chase"`.
+- **The reviewer reported "no shadow" from arches that do cast one.** At golden hour the shadow falls long and away
+  from the object, and the Haiku reviewer looked for it at the feet. Check with an A/B: the same frame with the
+  object hidden (`engine.world.marks.visible = false`) and an image difference; the band across the road vanished.
+  Sun shadows also only render within about 32 m of the rider, so far objects never show one.
+- **Same colour on a pennant and its arch hides the pennant.** The flamme rouge's red triangle on a red arch read as
+  a notch; on navy it reads. Where: `SegmentMarks.ts` `skinCanvas`.
 
 ## Devices and riding
 

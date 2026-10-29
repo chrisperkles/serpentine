@@ -33,6 +33,32 @@ with no order yet live in [BACKLOG.md](BACKLOG.md).
   are left in GPU memory today (`Engine.unloadWorld`). Check with `renderer.info.memory` over three rides.
 - Tests for the ride session, the unfinished-ride copy, storage and the device hub (fake devices).
 
+## Ideas from Zwift Plus (DC Rainmaker's review, 2026-10-29)
+
+Zwift Plus ($29.99 a month) adds Coach (adaptive plans) and Video Routes (filmed roads with Zwift's arches and
+riders on top). What fits Serpentine, best first:
+
+- [x] **A plan that adapts.** Coach moves and lightens sessions after missed days or an unplanned hard ride, plans
+  towards a race date, and picks which ride covers a session; its workouts are written by people, so rules do the
+  same here (`src/training/adapt.ts`): a missed hard session moves to a free day this week, never next to another
+  hard one; after an unplanned hard ride (TSS 80+) or with form below −25 the next hard session goes easy; fitness,
+  fatigue and form from every ride's TSS; a plan can end in an event's week. Today's session suggests the route that
+  lasts as long (two, queued, when one is too short: `routeFit.ts`), and the summary has one line on the intervals
+  (`feedback.ts`).
+- [x] **Route queue.** The reviewer's main wish: at the top (or the end of a lap) the next route starts by itself
+  instead of a menu (15 s to say "stay here"); a running workout carries on. Each route stays its own ride in
+  History and on Strava (`src/sim/queue.ts`, the + beside each route).
+- [x] **Segment arches and road paint.** Start and finish arches, painted lines and the word in the lane, a
+  chequered finish, the flamme rouge and countdown boards before the top (`src/engine/SegmentMarks.ts`, brief
+  `docs/art/segment-marks.md`; four review rounds, 3.00, not approved yet: open points in the brief).
+- **Better route cards:** Zwift's are a profile and one sentence, and too thin. Ours can say length, metres,
+  the famous section and why it is worth riding, from `research/<route>/`.
+- **Own video routes:** Zwift films one take per road (two GoPro Hero 13 at 4K/120 on a car at cycling speed on
+  climbs, a Karoo for GPS and barometric height) and plays it at the rider's speed. Serpentine could play an MP4
+  the same way, gradient from the DEM; a GoPro with GPS writes the track into the file. Spike: one Gaisberg take.
+- For 1.3: in a group a camera at head height mostly shows backsides (keep the chase camera above the riders);
+  riders far ahead shrink and fade; steering around riders must be smooth; oncoming cars never hit you.
+
 ## 1.2: Strava for everyone
 
 Rides go to Strava by themselves at the end, and friends can connect without creating their own Strava API

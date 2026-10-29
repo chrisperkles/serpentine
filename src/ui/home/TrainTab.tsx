@@ -1,5 +1,6 @@
-import { useState } from 'react';
+import { useMemo, useState } from 'react';
 import type { AppSettings, RideSummary } from '../../sim/storage.ts';
+import type { RouteOption } from '../../training/routeFit.ts';
 import { RAMP_TEST_ID } from '../../training/rampTest.ts';
 import { toZwo } from '../../workouts/zwo.ts';
 import type { Workout } from '../../workouts/types.ts';
@@ -12,6 +13,7 @@ export function TrainTab({
   workouts,
   settings,
   rides,
+  routes,
   onRideWorkout,
   onWorkoutsChanged,
   onImportZwo,
@@ -19,20 +21,25 @@ export function TrainTab({
   workouts: Workout[];
   settings: AppSettings;
   rides: RideSummary[];
-  onRideWorkout: (id: string) => void;
+  routes: RouteOption[];
+  /** A workout, and the routes to ride it on when the plan suggests them (the first one, then the queue). */
+  onRideWorkout: (id: string, routeIds?: string[]) => void;
   onWorkoutsChanged: (select?: string) => void;
   onImportZwo: (f: File) => void;
 }) {
   const [sel, setSel] = useState<Workout | null>(workouts.find((w) => w.id !== RAMP_TEST_ID) ?? null);
   const [builder, setBuilder] = useState<{ initial?: Workout } | null>(null);
   const ramp = workouts.find((w) => w.id === RAMP_TEST_ID);
+  const planRides = useMemo(() => rides.map((r) => ({ start: r.start, workoutId: r.workoutId, duration: r.duration, tss: r.tss })), [rides]);
   return (
     <div className="train-tab">
       <div className="train-plan">
         <PlanPanel
           ftp={settings.ftp}
-          rides={rides.map((r) => ({ start: r.start, workoutId: r.workoutId, duration: r.duration }))}
-          onPickWorkout={(id) => onRideWorkout(id)}
+          rides={planRides}
+          routes={routes}
+          mass={settings.weight + settings.bikeWeight}
+          onPickWorkout={onRideWorkout}
         />
         <section className="ftp-box">
           <h2>Your FTP</h2>

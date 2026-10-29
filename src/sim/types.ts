@@ -27,4 +27,6 @@ export interface RideRecord {
   weight: number;
   /** Metres of easy lead-in ridden before the route proper (src/geo/leadIn.ts). */
   leadIn?: number;
+  /** Seconds into the workout at the first sample: a queued route carried on the workout of the route before. */
+  workoutFrom?: number;
 }

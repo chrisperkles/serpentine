@@ -15,6 +15,10 @@ export interface SummaryData {
   previousBest: number | null;
   /** Saving failed (disk full, server gone): shown with a retry, the ride's autosaved copy is kept meanwhile. */
   unsaved?: boolean;
+  /** A queued ride: the routes before this one, each saved as its own ride. */
+  earlier?: string[];
+  /** One line on the workout's hard intervals. */
+  feedback?: string;
 }
 
 export function Summary({
@@ -48,6 +52,7 @@ export function Summary({
       <div className="summary-inner">
         <p className="muted">{new Date(record.start).toLocaleString('de-AT', { weekday: 'long', day: '2-digit', month: 'long', hour: '2-digit', minute: '2-digit' })}</p>
         <h1 className="s-title">{record.name}</h1>
+        {data.earlier && <p className="muted s-earlier">After {data.earlier.join(', ')}: each route is its own ride in History.</p>}
         {data.unsaved && (
           <div className="s-unsaved" role="alert">
             <span>This ride isn't saved yet. Download the .fit to be safe, or try again.</span>
@@ -66,6 +71,7 @@ export function Summary({
           </div>
         )}
         {record.workoutName && <p className="s-workout">{record.workoutName}</p>}
+        {data.feedback && <p className="s-feedback">{data.feedback}</p>}
         {summitTime !== null && (
           <p className={`s-summit ${pb ? 'pb' : ''}`}>
             Summit in {fmtTime(summitTime)}

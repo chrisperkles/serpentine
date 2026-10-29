@@ -10,6 +10,7 @@ import { LIBRARY, parseZwo } from '../workouts/index.ts';
 import type { Workout } from '../workouts/types.ts';
 import { hub } from '../devices/index.ts';
 import { markWelcomed, needsPick, needsWelcome } from '../sim/profiles.ts';
+import type { QueuedRoute } from '../sim/queue.ts';
 import { Contours } from './Contours.tsx';
 import { History } from './History.tsx';
 import { useHub } from './hooks.ts';
@@ -56,6 +57,8 @@ export function Home({
   onTab,
   onOpenRide,
   notice,
+  queue,
+  onQueue,
 }: {
   settings: AppSettings;
   onSettings: (s: AppSettings) => void;
@@ -65,6 +68,9 @@ export function Home({
   onOpenRide: (id: string) => void;
   /** Shown above the route on the Ride tab. */
   notice?: ReactNode;
+  /** Routes ridden after the selected one, each starting at the end of the one before. */
+  queue: QueuedRoute[];
+  onQueue: (q: QueuedRoute[]) => void;
 }) {
   const [routes, setRoutes] = useState<RouteEntry[]>([]);
   const [routeId, setRouteId] = useState<string>(() => stored<string>('serpentine.route', 'gaisberg'));
@@ -134,14 +140,23 @@ export function Home({
     }
   };
 
-  const rideWorkout = (id: string) => {
+  /** From the plan: the workout, and the routes it suggests (the first to ride, the rest queued after it). */
+  const rideWorkout = (id: string, routeIds?: string[]) => {
     if (id === 'free') setMode('free');
     else {
       setWorkoutId(id);
       setMode('workout');
     }
+    if (routeIds?.length) {
+      setRouteId(routeIds[0]);
+      onQueue(routeIds.slice(1).map((r) => ({ id: r, name: routes.find((x) => x.data.id === r)?.data.name ?? r })));
+    }
     onTab('ride');
   };
+  const routeOptions = useMemo(
+    () => routes.map((r) => ({ id: r.data.id, name: r.data.name, category: r.data.category, profile: r.profile })),
+    [routes],
+  );
 
   return (
     <div
@@ -173,8 +188,11 @@ export function Home({
             onDrawRoute={() => setBuilder(true)}
             onDeleteRoute={async (id) => {
               await deleteCustomRoute(id);
+              onQueue(queue.filter((q) => q.id !== id));
               await refreshRoutes();
             }}
+            queue={queue}
+            onQueue={onQueue}
             rides={rides}
             workouts={workouts}
             mode={mode}
@@ -201,6 +219,7 @@ export function Home({
             workouts={workouts}
             settings={settings}
             rides={rides}
+            routes={routeOptions}
             onRideWorkout={rideWorkout}
             onWorkoutsChanged={async (id) => {
               setCustomWorkouts(await listCustomWorkouts());
