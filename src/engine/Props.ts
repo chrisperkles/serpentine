@@ -173,7 +173,7 @@ export class Props extends WorldGroup {
       if (!Number.isFinite(y)) continue;
       if (t.bell) {
         // Mallorcan bell towers are stone with tile caps, and Midtown's are church steeples between skyscrapers: left out rather than drawn Alpine
-        if (biome?.id === 'mediterranean' || biome?.carFree) continue;
+        if (biome?.id === 'mediterranean' || biome?.carFree || biome?.suburb) continue;
         // a church tower mapped on its own: white shaft and a slate spire
         const H = t.height || 28;
         const w = Math.min(4, Math.max(2.5, t.r || 3));

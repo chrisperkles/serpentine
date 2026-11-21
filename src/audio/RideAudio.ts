@@ -16,7 +16,7 @@ export interface RideAudioState {
   descending: boolean;
   /** 0..1 open water within ~600 m (Engine.environment().sea) */
   sea?: number;
-  /** 'alpine' (default) | 'mediterranean' */
+  /** 'alpine' (default) | 'mediterranean' | 'coastal' (surf and gulls only, e.g. Sydney) */
   biome?: string;
 }
 
@@ -308,7 +308,7 @@ export class RideAudio {
 
     // Mediterranean layers. Surf is masked by wind at speed (louder when slow).
     const med = s.biome === 'mediterranean';
-    const sea = med ? clamp(s.sea ?? 0) : 0;
+    const sea = med || s.biome === 'coastal' ? clamp(s.sea ?? 0) : 0;
     const swell = Math.pow(0.5 + 0.5 * Math.sin(this.wavePhase), 2);
     const slow = 1 - 0.8 * v;
     this.surfGain.gain.setTargetAtTime(0.09 * sea * (0.3 + 0.7 * swell) * slow, t, 0.3);
@@ -340,7 +340,7 @@ export class RideAudio {
     }
     if (this.gullT <= 0) {
       this.gullT = rand(8, 24);
-      if (s.biome === 'mediterranean' && (s.sea ?? 0) > 0.12 && v < 0.85) this.gulls(ctx, 0.5 + 0.5 * clamp(s.sea ?? 0));
+      if ((s.biome === 'mediterranean' || s.biome === 'coastal') && (s.sea ?? 0) > 0.12 && v < 0.85) this.gulls(ctx, 0.5 + 0.5 * clamp(s.sea ?? 0));
     }
     if (this.goatT <= 0) {
       this.goatT = rand(10, 26);

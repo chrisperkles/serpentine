@@ -84,7 +84,17 @@ export interface Line {
   kind: string;
 }
 
+/** Coast and park surfaces (Sydney): beach sand, sandstone outcrops and cliffs, mown parks and reserves. */
+export interface Shore {
+  sand: Polygon[];
+  rock: Polygon[];
+  /** Cliff lines (the foot of the face is on the right of the way's direction in OSM; we only need the line). */
+  cliffs: Float32Array[];
+  parks: Polygon[];
+}
+
 export interface OsmWorld {
+  shore?: Shore;
   forests: Polygon[];
   water: Polygon[];
   buildings: Building[];
@@ -391,6 +401,7 @@ export function parseOsm(route: Route, elements: OsmElement[]): OsmWorld {
   const barriers: Barrier[] = [];
   const pois: Poi[] = [];
   const towers: Tower[] = [];
+  const shore: Shore = { sand: [], rock: [], cliffs: [], parks: [] };
   // church and defence towers are buildings or scene models; these are the antennas
   const antenna = (t: Record<string, string>) =>
     t.man_made === 'mast' || (t.man_made === 'tower' && (t['tower:type'] === 'communication' || t['tower:type'] === 'bell_tower'));
@@ -431,6 +442,11 @@ export function parseOsm(route: Route, elements: OsmElement[]): OsmWorld {
       }
       continue;
     }
+    // beaches, rock and parks are drawn by the biomes that have them (biome.stone, biome.sand, biome.lawn)
+    if (t.natural === 'beach' || t.natural === 'sand') shore.sand.push(...polygonsFrom(route, el));
+    else if (t.natural === 'bare_rock') shore.rock.push(...polygonsFrom(route, el));
+    else if (t.natural === 'cliff' && el.geometry) shore.cliffs.push(toLine(route, el.geometry));
+    else if ((t.leisure === 'park' || t.leisure === 'garden' || t.leisure === 'pitch' || t.landuse === 'recreation_ground') && !t.building) shore.parks.push(...polygonsFrom(route, el));
     const coverCls = COVER[t.landuse] ?? COVER[t.natural];
     if (t.landuse === 'forest' || t.natural === 'wood') forests.push(...polygonsFrom(route, el));
     else if (t.natural === 'water') water.push(...polygonsFrom(route, el));
@@ -498,7 +514,7 @@ export function parseOsm(route: Route, elements: OsmElement[]): OsmWorld {
       roads.push({ pts, kind: t.highway, width: ROAD_WIDTH[t.highway] ?? 4 });
     }
   }
-  return { forests, water, buildings: dropOutlines(buildings), roads, trees: new Float32Array(trees), cover, barriers, pois, towers };
+  return { forests, water, buildings: dropOutlines(buildings), roads, trees: new Float32Array(trees), cover, barriers, pois, towers, shore };
 }
 
 function barrierHeight(v?: string): number | undefined {

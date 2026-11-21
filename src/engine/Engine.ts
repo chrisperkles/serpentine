@@ -22,7 +22,7 @@ import { Road } from './Road.ts';
 import { Sky } from './Sky.ts';
 import { Terrain } from './Terrain.ts';
 import { TerrainShadow } from './TerrainShadow.ts';
-import { clearWaterMask, setTerrainBiome, setWaterMask } from './terrainMaterial.ts';
+import { clearWaterMask, setSurfaceMask, setTerrainBiome, setWaterMask } from './terrainMaterial.ts';
 import { Vegetation } from './Vegetation.ts';
 import { GroundCover } from './GroundCover.ts';
 import { Landmarks, loadRouteScene, type Placement } from './Landmarks.ts';
@@ -545,6 +545,8 @@ export class Engine {
     ctx.globalCompositeOperation = 'lighter';
     ctx.fillStyle = '#00ff00';
     ctx.fill(pathOf(osm.cover.filter((c) => c.cls === 'meadow').map((c) => c.poly)), 'evenodd');
+    // suburbs: parks, gardens and pitches are mown lawn
+    if (this.biome.suburb && osm.shore) ctx.fill(pathOf(osm.shore.parks), 'evenodd');
     ctx.fillStyle = '#0000ff';
     ctx.fill(pathOf(osm.cover.filter((c) => c.cls === 'built').map((c) => c.poly)), 'evenodd');
     ctx.globalCompositeOperation = 'source-over';
@@ -600,6 +602,39 @@ export class Engine {
     ctex.minFilter = THREE.LinearFilter;
     ctex.generateMipmaps = false;
     setWaterMask(tex, x0, z0, cw * res, ch * res, ctex);
+    // beach sand and sandstone, where the biome has them
+    if (this.biome.sand && osm.shore) {
+      const sc = document.createElement('canvas');
+      sc.width = cw;
+      sc.height = ch;
+      const sx = sc.getContext('2d')!;
+      sx.fillStyle = '#000';
+      sx.fillRect(0, 0, cw, ch);
+      sx.globalCompositeOperation = 'lighter';
+      sx.fillStyle = '#ff0000';
+      sx.fill(pathOf(osm.shore.sand), 'evenodd');
+      sx.fillStyle = '#00ff00';
+      sx.fill(pathOf(osm.shore.rock), 'evenodd');
+      // cliff faces are lines: a strip a few metres wide along the top edge reads as rock
+      sx.strokeStyle = '#00ff00';
+      sx.lineJoin = sx.lineCap = 'round';
+      sx.lineWidth = 10 / res;
+      for (const l of osm.shore.cliffs) {
+        sx.beginPath();
+        for (let i = 0; i < l.length; i += 2) {
+          const px = (l[i] - x0) / res, pz = (l[i + 1] - z0) / res;
+          if (i === 0) sx.moveTo(px, pz);
+          else sx.lineTo(px, pz);
+        }
+        sx.stroke();
+      }
+      const stex = new THREE.CanvasTexture(sc);
+      stex.flipY = false;
+      stex.wrapS = stex.wrapT = THREE.ClampToEdgeWrapping;
+      stex.minFilter = THREE.LinearFilter;
+      stex.generateMipmaps = false;
+      setSurfaceMask(stex);
+    }
   }
 
   private canopyMask: { data: Uint8ClampedArray; x0: number; z0: number; res: number; w: number; h: number } | null = null;
@@ -822,9 +857,9 @@ export class Engine {
   }
 
   /** How wooded / built-up the surroundings are, for ambience. */
-  environment(): { forest: number; urban: number; sea: number; biome: 'alpine' | 'mediterranean' } {
+  environment(): { forest: number; urban: number; sea: number; biome: 'alpine' | 'mediterranean' | 'coastal' } {
     const w = this.world;
-    const biome = this.biome.id === 'mediterranean' ? 'mediterranean' : 'alpine';
+    const biome = this.biome.id === 'mediterranean' ? 'mediterranean' : this.biome.id === 'sydney' ? 'coastal' : 'alpine';
     if (!w) return { forest: 0, urban: 0, sea: 0, biome };
     const p = w.rider.position;
     // open water within ~600 m: ring of 16 points at 150 m and 400 m (ground < 0.6 m or water cover)

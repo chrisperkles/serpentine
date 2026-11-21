@@ -15,6 +15,8 @@ const BUCKET = 600;
 
 // surface ids (vertex attribute `surf`)
 const PLASTER = 0, WOOD = 1, ROOF = 2, TRIM = 3, FLOWERS = 4, GLASSWALL = 5, TIMBER = 6, MALLORCA = 7, MARES = 8, MASONRY = 9, CURTAIN = 10;
+// Sydney: brick cottage walls, rendered Art Deco and shop walls, brick walk-up flats with balconies
+const SYD_BRICK = 14, SYD_RENDER = 15, SYD_FLATS = 16;
 
 const srgb = (r: number, g: number, b: number) => new THREE.Color().setRGB(r, g, b, THREE.SRGBColorSpace);
 const WALLS = [srgb(0.95, 0.93, 0.88), srgb(0.97, 0.96, 0.93), srgb(0.93, 0.88, 0.76), srgb(0.9, 0.9, 0.87), srgb(0.95, 0.9, 0.82)];
@@ -62,6 +64,8 @@ interface Style {
   shutters: [THREE.Vector3, THREE.Vector3];
   /** City blocks (Manhattan): flat-roofed masonry and glass, drawn from 3D parts where OSM has them. */
   city?: boolean;
+  /** Sydney's eastern suburbs: brick bungalows, Art Deco and walk-up flats, shop terraces (addSydneyBuilding). */
+  sydney?: boolean;
 }
 
 const V = (r: number, g: number, b: number) => new THREE.Vector3(r, g, b);
@@ -86,6 +90,10 @@ const STYLES: Record<Biome['buildings'], Style> = {
   manhattan: {
     med: false, flatTowns: true, walls: NYC_MASONRY, roofs: NYC_ROOFS, woodTop: 0, balcony: 'none', pitch: [20, 25],
     shutters: [V(0.2, 0.2, 0.2), V(0.2, 0.2, 0.2)], city: true,
+  },
+  sydney: {
+    med: false, flatTowns: true, walls: WALLS, roofs: ROOFS, woodTop: 0, balcony: 'none', pitch: [24, 30],
+    shutters: [V(0.2, 0.2, 0.2), V(0.2, 0.2, 0.2)], sydney: true,
   },
 };
 
@@ -178,6 +186,7 @@ function addBuilding(
   bld: Building, b: Builder, heightAt: (x: number, z: number) => number, seed: number, ox: number, oz: number, style: Style,
 ) {
   if (style.city) return addCityBlock(bld, b, heightAt, seed, ox, oz);
+  if (style.sydney) return addSydneyBuilding(bld, b, heightAt, seed, ox, oz);
   const med = style.med;
   const ring = simplify(bld.ring);
   if (ring.length < 3) return;
@@ -412,7 +421,7 @@ function pointInRing(ring: THREE.Vector2[], x: number, y: number): boolean {
  * A Manhattan block or one 3D part of it: straight walls from the ground (or the part's min_height)
  * to the roof, a parapet, a flat roof or a pyramid top; water tank and bulkhead on plain mid-rises.
  */
-function addCityBlock(bld: Building, b: Builder, heightAt: (x: number, z: number) => number, seed: number, ox: number, oz: number) {
+function addCityBlock(bld: Building, b: Builder, heightAt: (x: number, z: number) => number, seed: number, ox: number, oz: number, sydney = false) {
   const ring = simplify(bld.ring);
   if (ring.length < 3) return;
   let gmin = Infinity, gmax = -Infinity;
@@ -441,10 +450,10 @@ function addCityBlock(bld: Building, b: Builder, heightAt: (x: number, z: number
   area = Math.abs(area) / 2;
   const centre = new THREE.Vector3(cx, (bottom + top) / 2, cz);
   const mat = bld.material;
-  const tower = height > 125 || ((bld.kind === 'office' || bld.kind === 'commercial') && height > 48 && rnd(seed + 2) > 0.45);
+  const tower = height > 125 || (sydney && height > 24) || ((bld.kind === 'office' || bld.kind === 'commercial') && height > 48 && rnd(seed + 2) > 0.45);
   const glass = mat === 'glass' || mat === 'metal' || mat === 'steel' || (!mat && !bld.wallColour && tower);
   const row = !bld.part && height < 21 && area < 420;
-  const set = glass ? NYC_GLASS : row ? NYC_ROWHOUSE : NYC_MASONRY;
+  const set = glass ? (sydney ? SYD_GLASS : NYC_GLASS) : row ? NYC_ROWHOUSE : NYC_MASONRY;
   const wall = parseColour(bld.wallColour, set[Math.floor(rnd(seed) * set.length)]).clone();
   if (glass || !bld.wallColour) {
     // tagged colours are often pure black or white: keep them inside what stone, brick and glass can be
@@ -470,7 +479,7 @@ function addCityBlock(bld: Building, b: Builder, heightAt: (x: number, z: number
     const p = local[i], q = local[(i + 1) % local.length];
     b.quad(new THREE.Vector3(p.x, bottom, p.y), new THREE.Vector3(q.x, bottom, q.y), new THREE.Vector3(q.x, wallTop, q.y), new THREE.Vector3(p.x, wallTop, p.y), wall, surf, centre);
   }
-  if (!glass && height > 12 && height < 160) cornice(b, local, sgn, wallTop, wall);
+  if (!sydney && !glass && height > 12 && height < 160) cornice(b, local, sgn, wallTop, wall);
   const roofCentre = new THREE.Vector3(cx, wallTop - 50, cz);
   if (pyramid) {
     // copper-green or slate caps of the pre-war towers (the Pierre, the Sherry-Netherland, the San Remo lanterns)
@@ -505,7 +514,7 @@ function addCityBlock(bld: Building, b: Builder, heightAt: (x: number, z: number
     const s = spot((rnd(seed + 31) - 0.5) * span * 0.3, (rnd(seed + 32) - 0.5) * span * 0.3, 3.5);
     if (s) b.box(s[0], s[1], dir, 2.6 + rnd(seed + 33) * 1.5, 2 + rnd(seed + 34), deck, deck + 3 + rnd(seed + 35) * 1.5, wall, TRIM);
   }
-  if (height > 20 && height < 95 && rnd(seed + 36) > 0.25) {
+  if (!sydney && height > 20 && height < 95 && rnd(seed + 36) > 0.25) {
     const s = spot((rnd(seed + 37) > 0.5 ? 1 : -1) * span * 0.24, (rnd(seed + 38) - 0.5) * span * 0.3, 2.6);
     if (s) {
       const legs = srgb(0.2, 0.2, 0.21);
@@ -591,6 +600,255 @@ function hipRoof(b: Builder, ring: THREE.Vector2[], eave: number, pitch: number,
   }
   return true;
 }
+
+
+// ---- Sydney's eastern suburbs ----
+// Red-brown and cream brick, terracotta tile roofs; 1960s walk-up flats in red and blond brick; Art Deco render.
+const SYD_BRICKS = [srgb(0.55, 0.26, 0.19), srgb(0.62, 0.33, 0.22), srgb(0.5, 0.25, 0.2), srgb(0.66, 0.4, 0.27), srgb(0.46, 0.22, 0.17)];
+const SYD_BLOND = [srgb(0.78, 0.64, 0.43), srgb(0.84, 0.72, 0.52), srgb(0.72, 0.56, 0.38)];
+const SYD_RENDERS = [srgb(0.93, 0.9, 0.83), srgb(0.9, 0.84, 0.7), srgb(0.84, 0.89, 0.85), srgb(0.9, 0.78, 0.7), srgb(0.96, 0.95, 0.92), srgb(0.88, 0.85, 0.78)];
+const SYD_TILES = [srgb(0.52, 0.27, 0.2), srgb(0.46, 0.24, 0.18), srgb(0.58, 0.32, 0.23), srgb(0.42, 0.22, 0.17), srgb(0.36, 0.34, 0.33)];
+// Bondi Junction's towers: grey-green and bronze glass, pale concrete
+const SYD_GLASS = [srgb(0.42, 0.52, 0.55), srgb(0.55, 0.6, 0.58), srgb(0.66, 0.67, 0.64), srgb(0.33, 0.4, 0.43), srgb(0.5, 0.48, 0.42)];
+const SYD_FLAT_ROOFS = [srgb(0.45, 0.45, 0.44), srgb(0.55, 0.54, 0.51), srgb(0.38, 0.4, 0.4)];
+
+/**
+ * One Sydney building. Towers and 3D parts reuse the city block code (glass and concrete, no New York water tanks);
+ * houses get hipped or gabled terracotta roofs with a chimney; walk-up flats and shops are flat-roofed (a third
+ * with a low hip) with parapets. Surface ids carry the look to the shader: brick wall, render, flats with balconies.
+ */
+function addSydneyBuilding(bld: Building, b: Builder, heightAt: (x: number, z: number) => number, seed: number, ox: number, oz: number) {
+  if (bld.part || bld.height >= 24) return addCityBlock(bld, b, heightAt, seed, ox, oz, true);
+  const ring = simplify(bld.ring);
+  if (ring.length < 3) return;
+  let gmin = Infinity, gmax = -Infinity;
+  for (const p of ring) {
+    const h = heightAt(p.x, p.y);
+    if (!Number.isFinite(h)) return;
+    gmin = Math.min(gmin, h);
+    gmax = Math.max(gmax, h);
+  }
+  const base = gmin - 0.6;
+  const local = ring.map((p) => new THREE.Vector2(p.x - ox, p.y - oz));
+  let area = 0;
+  for (let i = 0; i < local.length; i++) {
+    const p = local[i], q = local[(i + 1) % local.length];
+    area += p.x * q.y - q.x * p.y;
+  }
+  area = Math.abs(area) / 2;
+  const kind = bld.kind;
+  const centre0 = new THREE.Vector3(local.reduce((s, p) => s + p.x, 0) / local.length, 0, local.reduce((s, p) => s + p.y, 0) / local.length);
+  // an open roof (bus shelter, carport, petrol canopy): a slab on its own, no walls
+  if (kind === 'roof' || kind === 'carport') {
+    const y = gmax + 2.9;
+    b.setBase(gmax, y);
+    const c = new THREE.Vector3(centre0.x, y - 50, centre0.z);
+    for (const [i, j, k] of THREE.ShapeUtils.triangulateShape(local, [])) {
+      b.tri(new THREE.Vector3(local[i].x, y, local[i].y), new THREE.Vector3(local[j].x, y, local[j].y), new THREE.Vector3(local[k].x, y, local[k].y), srgb(0.7, 0.7, 0.68), TRIM, c);
+    }
+    return;
+  }
+  const shopKind = ['commercial', 'retail', 'pub', 'office', 'hotel'].includes(kind);
+  const instit = ['university', 'school', 'hospital', 'public', 'government', 'civic', 'kindergarten', 'dormitory', 'military', 'synagogue', 'church', 'grandstand', 'service', 'construction'].includes(kind);
+  const levels = bld.levels ?? Math.max(1, Math.round((bld.height - 1) / 3));
+  const flats = !instit && !shopKind && (kind === 'apartments' || (levels >= 3 && area > 120) || (['residential', 'yes'].includes(kind) && area > 260 && levels >= 2));
+  // houses: everything small and low that is not a shop, school or block of flats
+  const house = !flats && !shopKind && !instit && area < 420;
+  const storeyH = flats || shopKind || instit ? 3.0 : 3.1;
+  const wallTop = gmax + Math.max(2.9, (house ? Math.min(levels, 2) : levels) * storeyH + 0.2);
+  b.setBase(gmax, wallTop);
+  const centre = new THREE.Vector3(centre0.x, (base + wallTop) / 2, centre0.z);
+  // colours: houses red-brown brick (a quarter cream render), flats red or blond brick or pastel Art Deco render,
+  // shops and institutions render or blond brick
+  const pick = <T,>(a: T[], k: number) => a[Math.floor(rnd(seed + k) * a.length)];
+  let wallCol: THREE.Color, surf: number;
+  if (house) { const render = rnd(seed + 1) < 0.28; wallCol = render ? pick(SYD_RENDERS, 2) : pick(SYD_BRICKS, 2); surf = render ? SYD_RENDER : SYD_BRICK; }
+  else if (flats) { const m = rnd(seed + 1); if (m < 0.38) { wallCol = pick(SYD_BRICKS, 2); surf = SYD_FLATS; } else if (m < 0.62) { wallCol = pick(SYD_BLOND, 2); surf = SYD_FLATS; } else { wallCol = pick(SYD_RENDERS, 2); surf = SYD_RENDER; } }
+  else { const m = rnd(seed + 1); if (m < 0.5) { wallCol = pick(SYD_RENDERS, 2); surf = SYD_RENDER; } else { wallCol = pick(SYD_BLOND, 2); surf = SYD_RENDER; } }
+  const wall = parseColour(bld.wallColour, wallCol).clone();
+  if (bld.wallColour) {
+    // OSM colours are loose: keep them warm and inside what brick and render can be
+    const hsl = { h: 0, s: 0, l: 0 };
+    wall.getHSL(hsl, THREE.SRGBColorSpace);
+    wall.setHSL(hsl.h, Math.min(hsl.s, 0.45), Math.min(Math.max(hsl.l, 0.25), 0.82), THREE.SRGBColorSpace);
+  }
+  // shops get awnings and glass in the ground floor (the 15.3 surface), and only where the block is on a street
+  const wallSurf = surf === SYD_RENDER && shopKind ? SYD_RENDER + 0.3 : surf;
+  for (let i = 0; i < local.length; i++) {
+    const p = local[i], q = local[(i + 1) % local.length];
+    b.quad(new THREE.Vector3(p.x, base, p.y), new THREE.Vector3(q.x, base, q.y), new THREE.Vector3(q.x, wallTop, q.y), new THREE.Vector3(p.x, wallTop, p.y), wall, wallSurf, centre);
+  }
+
+  // oriented bounding rectangle along the longest edge
+  let best = 0;
+  let dir = new THREE.Vector2(1, 0);
+  for (let i = 0; i < local.length; i++) {
+    const e = new THREE.Vector2().subVectors(local[(i + 1) % local.length], local[i]);
+    if (e.length() > best) { best = e.length(); dir = e.clone().normalize(); }
+  }
+  const perp = new THREE.Vector2(-dir.y, dir.x);
+  let u0 = Infinity, u1 = -Infinity, v0 = Infinity, v1 = -Infinity;
+  for (const p of local) {
+    const u = p.x * dir.x + p.y * dir.y, v = p.x * perp.x + p.y * perp.y;
+    u0 = Math.min(u0, u); u1 = Math.max(u1, u); v0 = Math.min(v0, v); v1 = Math.max(v1, v);
+  }
+  const rectish = area / ((u1 - u0) * (v1 - v0)) > 0.78 && v1 - v0 < 30;
+  const roofCentre = new THREE.Vector3(centre.x, wallTop - 50, centre.z);
+  const tile = parseColour(bld.roofColour, pick(SYD_TILES, 7));
+  const lowHip = !house && rnd(seed + 8) < 0.3 && !shopKind;
+  if ((house || instit) && rectish) {
+    const P = (u: number, v: number, y: number) => new THREE.Vector3(dir.x * u + perp.x * v, y, dir.y * u + perp.y * v);
+    const half = (v1 - v0) / 2, vm = (v0 + v1) / 2;
+    const pitch = THREE.MathUtils.degToRad(house ? 24 + rnd(seed + 11) * 8 : 18);
+    const rise = Math.min(half * Math.tan(pitch), 4.8);
+    const ov = 0.55;
+    const eave = wallTop - ov * (rise / half);
+    const ridgeY = wallTop + rise;
+    // Californian bungalows are gabled to the street, Federation houses hipped; long thin terraces are gabled
+    const hipped = rnd(seed + 12) < 0.7 && (u1 - u0) < (v1 - v0) * 2.6;
+    const hip = hipped ? Math.min(half, (u1 - u0) / 2 - 0.3) : 0;
+    const rA = P(u0 - ov + hip, vm, ridgeY), rB = P(u1 + ov - hip, vm, ridgeY);
+    const e00 = P(u0 - ov, v0 - ov, eave), e10 = P(u1 + ov, v0 - ov, eave), e01 = P(u0 - ov, v1 + ov, eave), e11 = P(u1 + ov, v1 + ov, eave);
+    b.quad(e00, e10, rB, rA, tile, ROOF, roofCentre);
+    b.quad(e01, e11, rB, rA, tile, ROOF, roofCentre);
+    if (hipped) {
+      b.tri(e00, e01, rA, tile, ROOF, roofCentre);
+      b.tri(e10, e11, rB, tile, ROOF, roofCentre);
+    } else {
+      for (const u of [u0, u1]) b.tri(P(u, v0, wallTop), P(u, v1, wallTop), P(u, vm, ridgeY), wall, surf === SYD_RENDER ? SYD_RENDER : SYD_BRICK, centre);
+    }
+    // the brick chimney of a Federation house, on the ridge a third of the way along
+    if (house && (u1 - u0) > 6 && rnd(seed + 14) < 0.7) {
+      const cu = u0 + (u1 - u0) * (0.28 + 0.4 * rnd(seed + 15));
+      b.box(dir.x * cu + perp.x * vm, dir.y * cu + perp.y * vm, dir, 0.4, 0.4, wallTop, ridgeY + 1.1, pick(SYD_BRICKS, 16), TRIM);
+    }
+    return;
+  }
+  // odd footprints: a hip over the whole outline when it will fold, otherwise flat
+  if (house || lowHip) {
+    if (hipRoof(b, local, wallTop, THREE.MathUtils.degToRad(house ? 22 : 12), house ? tile : pick(SYD_FLAT_ROOFS, 9), roofCentre)) return;
+  }
+  // flat roof with a parapet (flats, shops, schools)
+  const par = 0.55;
+  for (let i = 0; i < local.length; i++) {
+    const p = local[i], q = local[(i + 1) % local.length];
+    b.quad(new THREE.Vector3(p.x, wallTop, p.y), new THREE.Vector3(q.x, wallTop, q.y), new THREE.Vector3(q.x, wallTop + par, q.y), new THREE.Vector3(p.x, wallTop + par, p.y), wall, TRIM, centre);
+  }
+  const deck = pick(SYD_FLAT_ROOFS, 9);
+  for (const [i, j, k] of THREE.ShapeUtils.triangulateShape(local, [])) {
+    b.tri(new THREE.Vector3(local[i].x, wallTop + 0.1, local[i].y), new THREE.Vector3(local[j].x, wallTop + 0.1, local[j].y), new THREE.Vector3(local[k].x, wallTop + 0.1, local[k].y), deck, TRIM, roofCentre);
+  }
+  // a stair and lift housing on bigger blocks, a few clothes lines' worth of clutter is beyond us
+  if (area > 220 && levels >= 3 && rectish) {
+    const cu = (u0 + u1) / 2 + (rnd(seed + 20) - 0.5) * (u1 - u0) * 0.4, cv = (v0 + v1) / 2;
+    b.box(dir.x * cu + perp.x * cv, dir.y * cu + perp.y * cv, dir, 1.8, 1.5, wallTop, wallTop + 2.7, wall, TRIM);
+  }
+}
+
+
+/**
+ * Fragment code for the Sydney surfaces (14 brick cottage, 15 render / shops, 16 brick flats with balconies), spliced
+ * into the facade shader. Measures along the wall from its normal like the city surfaces; windows smaller than a
+ * pixel fade to the mean of wall and glass.
+ */
+const SYDNEY_GLSL = /* glsl */ `
+    float uc = dot(wp.xz, vec2(-n.z, n.x)) / max(length(n.xz), 0.001);
+    float bid = fHash(floor(vec2(vBaseY * 7.31, vTopY * 3.17)));
+    float total = vTopY - vBaseY;
+    vec3 v = normalize(wp - cameraPosition);
+    vec3 r = reflect(v, n);
+    vec3 sky = atmoSky(normalize(vec3(r.x, abs(r.y) * 0.6 + 0.05, r.z)));
+    float fres = pow(max(1.0 - abs(dot(-v, n)), 0.0), 3.0);
+    float shop = step(abs(vSurf - 15.3), 0.05);
+    float fh = 3.0 + 0.15 * bid;
+    float inWall = step(hy, total + 0.2) * step(0.0, hy);
+    float near = 1.0 - smoothstep(25.0, 90.0, camD);
+    vec3 base = diffuseColor.rgb;
+    base *= 0.94 + 0.12 * fHash(floor(vec2(uc / 3.5, hy / 2.5)) + bid);
+    if (sid != 15) {
+      // brick: stretcher courses with a running bond, only from close by
+      float brick = fHash(floor(vec2(uc / 0.23 + 0.5 * floor(hy / 0.075), hy / 0.075)));
+      float course = smoothstep(0.0, 0.2, fract(hy / 0.075));
+      base *= 1.0 + (brick - 0.5) * 0.22 * near;
+      base *= 1.0 - 0.1 * near * (1.0 - course);
+    }
+    float bay = sid == 14 ? 3.3 + 1.3 * bid : sid == 16 ? 5.0 + 1.6 * bid : 2.3 + 0.9 * bid;
+    float fx = fract(uc / bay);
+    float seg = floor(uc / bay);
+    float fy = fract(hy / fh);
+    float gy = hy / fh;
+    float fine = wallF * (1.0 - smoothstep(0.22, 0.6, max(fwidth(uc) / bay, fwidth(hy) / fh)));
+    vec3 pane = mix(vec3(0.1, 0.12, 0.14), sky * 0.9, 0.3 + 0.5 * fres);
+    // plinth and soot under the eaves
+    base *= 1.0 - 0.18 * (1.0 - step(0.45, hy)) - 0.16 * smoothstep(0.7, 0.0, total - hy) * step(hy, total + 0.1);
+    vec3 col = base;
+    float k = fine * inWall;
+    if (sid == 14) {
+      // cottage: pairs of tall double-hung windows in white frames, a timber front door in one bay
+      float ww = 0.17;
+      float inX = step(0.5 - ww, fx) * step(fx, 0.5 + ww);
+      float wy = step(0.3, fy) * step(fy, 0.8);
+      float win = inX * wy * step(0.5, hy);
+      float frame = win * (1.0 - step(0.5 - ww + 0.03, fx) * step(fx, 0.5 + ww - 0.03) * step(0.33, fy) * step(fy, 0.77));
+      float sash = win * step(abs(fy - 0.55), 0.012);
+      float door = step(0.82, fHash(vec2(seg, bid * 9.0))) * step(0.34, fx) * step(fx, 0.66) * step(hy, 2.15) * step(hy, fh) * step(0.0, hy);
+      vec3 doorCol = fHash(vec2(bid, 3.0)) > 0.5 ? vec3(0.1, 0.22, 0.14) : vec3(0.3, 0.07, 0.07);
+      float lintel = inX * step(0.8, fy) * step(fy, 0.84) * step(0.5, hy);
+      col = mix(col, pane, win * (1.0 - door) * k);
+      col = mix(col, vec3(0.9, 0.88, 0.82), max(frame, sash) * (1.0 - door) * k);
+      col = mix(col, vec3(0.74, 0.7, 0.62), lintel * k * 0.8);
+      col = mix(col, doorCol, door * k);
+    } else if (sid == 15) {
+      // rendered Art Deco block or shop terrace: pale floor bands, ribbon windows in steel frames, a stepped parapet
+      float floorLine = abs(hy - fh * floor(hy / fh + 0.5));
+      float band = step(floorLine, 0.14) * step(fh * 0.9, hy);
+      float ww = 0.36;
+      float inX = step(0.5 - ww, fx) * step(fx, 0.5 + ww);
+      float up = step(fh * 1.15, hy) * step(hy, total - 0.8);
+      float win = inX * step(0.3, fy) * step(fy, 0.82) * up;
+      float mull = win * step(abs(fx - 0.5), 0.035);
+      col = mix(col, vec3(0.93, 0.91, 0.86), band * k * 0.8);
+      col = mix(col, pane, win * k);
+      col = mix(col, vec3(0.9, 0.9, 0.88), mull * k);
+      col = mix(col, vec3(0.93, 0.91, 0.86), step(total - hy, 0.7) * k * 0.7);
+      // ground floor
+      float gF = 1.0 - step(fh * 1.15, hy);
+      float shopW = 3.6 + 1.2 * bid;
+      float sseg = floor(uc / shopW);
+      float sf = fract(uc / shopW);
+      float sh = fHash(vec2(sseg, bid * 13.0));
+      float glassF = shop * step(0.06, sf) * step(sf, 0.94) * step(0.2, hy) * step(hy, fh * 0.72);
+      vec3 shopGlass = mix(vec3(0.05, 0.045, 0.04), sky * 0.7, 0.1 + 0.5 * fres);
+      shopGlass = mix(shopGlass, vec3(0.85, 0.66, 0.4) * 0.5, step(0.5, sh) * 0.4 * (1.0 - fres));
+      float awning = shop * step(0.04, sf) * step(sf, 0.96) * step(fh * 0.74, hy) * step(hy, fh * 0.98) * step(0.45, sh);
+      vec3 ac = awnCol(fHash(vec2(sseg, bid * 5.0)));
+      vec3 stripe = mix(ac, ac * 1.6 + 0.05, step(0.5, fract(uc / 0.45)) * near);
+      vec3 gcol = base;
+      gcol = mix(gcol, shopGlass, glassF);
+      gcol = mix(gcol, stripe * (0.75 + 0.25 * smoothstep(fh * 0.74, fh * 0.98, hy)), awning);
+      // houses and offices without shops: ordinary windows at street level too
+      float ordW = (1.0 - shop) * inX * step(0.5, hy) * step(hy, fh * 0.85) * step(0.28, fy) * step(fy, 0.8);
+      gcol = mix(gcol, pane, ordW);
+      col = mix(col, gcol, gF * fine * inWall);
+    } else {
+      // 1960s walk-up flats: a window pair and a recessed balcony in every bay, a slab line at every floor
+      float inWin = step(0.1, fx) * step(fx, 0.42);
+      float win = inWin * step(0.3, fy) * step(fy, 0.8) * step(0.9, hy) * step(hy, total - 0.3);
+      float inBal = step(0.52, fx) * step(fx, 0.94);
+      float bal = inBal * step(0.06, fy) * step(fy, 0.82) * step(0.9, hy) * step(hy, total - 0.3);
+      float rail = bal * step(fy, 0.4);
+      float slab = step(abs(hy - fh * floor(hy / fh + 0.5)), 0.12) * step(0.9, hy);
+      vec3 recess = mix(vec3(0.07, 0.065, 0.06), pane * 0.8, 0.25);
+      col = mix(col, pane, win * k);
+      col = mix(col, recess, bal * (1.0 - rail) * k);
+      col = mix(col, base * 1.15 + 0.06, rail * k);
+      col = mix(col, vec3(0.86, 0.83, 0.76), slab * k * 0.7);
+      float gdoor = step(0.8, fHash(vec2(seg, bid * 7.0))) * step(hy, fh * 0.8) * step(0.0, hy) * step(0.3, fx) * step(fx, 0.7);
+      col = mix(col, vec3(0.08, 0.07, 0.06), gdoor * k * (1.0 - step(fh, hy)));
+    }
+    col = mix(col, base * 0.82 + sky * 0.03, (1.0 - fine) * wallF * 0.9);
+    diffuseColor.rgb = mix(diffuseColor.rgb, col, wallF);
+`;
 
 /** Windows, shutters, planks and roof tiles drawn from the surface id and world position. */
 function facadeMaterial(style: Style) {
@@ -885,6 +1143,8 @@ function facadeMaterial(style: Style) {
       glassCol *= 1.0 - 0.35 * step(hy, 6.0) * tallT;
       diffuseColor.rgb = mix(diffuseColor.rgb, glassCol, wallF);
     }
+  } else if (sid >= 14 && sid <= 16) {
+${SYDNEY_GLSL}
   } else if (sid == 4) {
     // geraniums: red blossoms over green leaves
     float b = fHash(floor(vec2(u * 9.0, wp.y * 9.0)));
@@ -893,7 +1153,7 @@ function facadeMaterial(style: Style) {
 }`,
       );
   };
-  return patchMaterial(mat, { key: `facade5:${style.city ? 'city' : 'house'}` });
+  return patchMaterial(mat, { key: `facade6:${style.city ? 'city' : 'house'}` });
 }
 
 /** Whether any point along the footprint's edges (every ~1.5 m) lies within `clear` of the route. */

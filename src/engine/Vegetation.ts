@@ -6,10 +6,11 @@ import type { OsmWorld, Polygon } from '../geo/osm.ts';
 import type { Route, RouteIndex } from '../geo/route.ts';
 import { patchMaterial } from './atmosphere.ts';
 import { mergeColored } from './Road.ts';
-import { broadleafGeometry, parkTreeGeometry, pineGeometry, preserveCoverage, spruceGeometry, treeAtlas, treeAtlasReady } from './treeModels.ts';
+import { broadleafGeometry, eucalyptGeometry, figGeometry, norfolkPineGeometry, parkTreeGeometry, pineGeometry, preserveCoverage, spruceGeometry, treeAtlas, treeAtlasReady } from './treeModels.ts';
 import { ALPINE, type Biome } from './biome.ts';
 import { impostorGeometry, renderImpostorAtlas } from './impostors.ts';
-import { broadleafTint, coniferTint, dayOfYear, evergreenBroadTint, parkTint, pineTint } from './season.ts';
+import { broadleafTint, coniferTint, dayOfYear, evergreenBroadTint, parkTint, pineTint, sydneyTint } from './season.ts';
+import { sydneyGround, sydneySpecies } from './sydneyTrees.ts';
 import { pointAt } from '../geo/route.ts';
 import type { BakedTrees } from '../geo/trees.ts';
 import { WorldGroup } from './dispose.ts';
@@ -201,7 +202,15 @@ export class Vegetation extends WorldGroup {
     const biome = o.biome ?? ALPINE;
     // Alpine: spruce + beech; Mediterranean: Aleppo pine + holm oak / wild olive
     // Park: the conifer slots carry plane (F) and elm (O), the broadleaf slots two oaks
-    const near: Record<Kind, THREE.BufferGeometry> = biome.parkTrees
+    // Sydney: Norfolk pine (F) and Moreton Bay fig (O) in the conifer slots, eucalypt (F) and a leafy street tree (O)
+    const near: Record<Kind, THREE.BufferGeometry> = biome.sydneyTrees
+      ? {
+        spruceF: norfolkPineGeometry(3),
+        spruceO: figGeometry(5),
+        beechF: eucalyptGeometry(2, 0.4),
+        beechO: broadleafGeometry(9, 0.3, 1.1),
+      }
+      : biome.parkTrees
       ? {
         spruceF: parkTreeGeometry('plane', 7),
         spruceO: parkTreeGeometry('elm', 11),
@@ -335,6 +344,7 @@ export class Vegetation extends WorldGroup {
       if (road.kind === 'path' || road.kind === 'footway' || road.kind === 'track') continue;
       markRoad(mask, W, H, x0, z0, cell, road.pts, road.width / 2 + 0.8);
     }
+    const sydney = o.biome?.sydneyTrees ? sydneyGround(route, osm, o.heightAt, o.corridor + 100) : null;
     for (let i = 0; i < t.n; i++) {
       let x = t.x[i];
       let z = t.z[i];
@@ -359,6 +369,18 @@ export class Vegetation extends WorldGroup {
       const raw = o.rawHeightAt?.(x, z) ?? y;
       if (Math.abs(raw - y) > 1.5) continue;
       const r1 = hash2(i, 17), r2 = hash2(i, 29);
+      if (sydney) {
+        const sp = sydneySpecies(sydney.seaDist(x, z), sydney.inPark(x, z), h, r1, hash2(i, 53));
+        sydneyTint(sp, r2, tint);
+        const cr = t.crown[i];
+        // crown radius in the model: pine 0.16, fig 0.47, gum 0.3, street tree 0.33 (see treeModels.ts)
+        const jitter = 0.85 + hash2(i, 41) * 0.3;
+        if (sp === 'pine') add('spruceF', x, y - 0.3, z, Math.min(Math.max(h * 0.2, 3.2), 7) / 0.16 * jitter, h, r1 * 6.283, tint);
+        else if (sp === 'fig') add('spruceO', x, y - 0.3, z, Math.min(Math.max(cr, h * 0.4, 5), 16) / 0.47 * jitter, Math.min(h, 24), r1 * 6.283, tint);
+        else if (sp === 'gum') add(r2 < 0.3 ? 'beechO' : 'beechF', x, y - 0.3, z, Math.min(Math.max(cr, h * 0.22), h * 0.5) / 0.3 * jitter, h, r2 * 6.283, tint);
+        else add('beechO', x, y - 0.3, z, Math.min(Math.max(cr, h * 0.3), h * 0.55) / 0.33 * jitter, Math.min(h, 16), r2 * 6.283, tint);
+        continue;
+      }
       const park = o.biome?.parkTrees === true;
       const conifer = t.kind[i] === 1 && !park;
       // forest edges along the road keep their lower branches, like open-grown trees

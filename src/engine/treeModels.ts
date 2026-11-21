@@ -606,3 +606,178 @@ export function parkTreeGeometry(species: ParkSpecies, seed = 1, width = 1): THR
   }
   return b.build();
 }
+
+// ---- Sydney's east coast (biome.sydneyTrees): eucalypt, Moreton Bay fig, Norfolk Island pine, street tree ----
+
+/**
+ * Sydney eucalypt (blue gum / spotted gum), height 1: a tall, pale, smooth trunk, a few steep forking limbs and
+ * an open, uneven crown of drooping leaf clumps with sky between them. `lush` adds clumps (garden and street trees).
+ */
+export function eucalyptGeometry(seed = 1, lush = 0.5): THREE.BufferGeometry {
+  const b = new Builder();
+  const r = rng(seed);
+  const reg = REGIONS.barkLight;
+  // smooth bark: cream to grey, with a darker rough stocking on the lowest metre (the texture alone is too brown)
+  const bark = (i: number, k: number): RGB => {
+    const n = Math.sin(i * 7.7 + k * 31.1 + seed) * 0.5 + 0.5;
+    const stocking = i < 2 ? 0.55 : 1;
+    const v = (1.45 + n * 0.45) * stocking;
+    return [v * 1.0, v * 0.95, v * 0.86];
+  };
+  const fork = 0.34 + r() * 0.1;
+  const lean = new THREE.Vector3((r() - 0.5) * 0.06, 0, (r() - 0.5) * 0.06);
+  const trunk: THREE.Vector3[] = [];
+  const rad: number[] = [];
+  for (let i = 0; i < 6; i++) {
+    const t = i / 5;
+    trunk.push(new THREE.Vector3(lean.x * t * t, -0.05 + (fork + 0.05) * t, lean.z * t * t));
+    rad.push(0.017 * (i === 0 ? 1.5 : 1.0 - 0.3 * t));
+  }
+  b.tube(trunk, rad, 7, reg, bark);
+  const top = trunk[5].clone();
+  const clumps: THREE.Vector3[] = [];
+  const nl = 4 + Math.floor(r() * 2);
+  const a0 = r() * Math.PI * 2;
+  for (let k = 0; k < nl; k++) {
+    const a = a0 + (k / nl) * Math.PI * 2 + (r() - 0.5) * 0.9;
+    const out = new THREE.Vector3(Math.cos(a), 0, Math.sin(a));
+    const reach = 0.12 + r() * 0.2;
+    const rise = 0.28 + r() * 0.3;
+    const mid = top.clone().addScaledVector(out, reach * 0.4).add(new THREE.Vector3((r() - 0.5) * 0.04, rise * 0.5, 0));
+    const end = top.clone().addScaledVector(out, reach).add(new THREE.Vector3(0, rise, 0));
+    b.tube([top, mid, end], [0.011, 0.0075, 0.0035], 5, reg, bark);
+    clumps.push(end);
+    // a side branch with its own clump
+    const sb = mid.clone().addScaledVector(new THREE.Vector3(-out.z, 0.3, out.x), (r() < 0.5 ? 1 : -1) * (0.09 + r() * 0.08)).addScaledVector(out, 0.05);
+    b.tube([mid, sb], [0.006, 0.003], 4, reg, bark);
+    clumps.push(sb);
+  }
+  clumps.push(top.clone().add(new THREE.Vector3((r() - 0.5) * 0.06, 0.5 + r() * 0.1, (r() - 0.5) * 0.06)));
+  const cards = Math.round(20 + lush * 10);
+  for (const c of clumps) {
+    for (let q = 0; q < cards / 2; q++) {
+      const a = r() * Math.PI * 2;
+      const d = r() * 0.11;
+      // leaves hang: cards taller than wide, lower edge darker, with a lean outward
+      const ctr = c.clone().add(new THREE.Vector3(Math.cos(a) * d, (r() - 0.55) * 0.07, Math.sin(a) * d));
+      const sa = r() * Math.PI;
+      const sw = 0.06 + r() * 0.035, sh = sw * (1.25 + r() * 0.5);
+      const e1 = new THREE.Vector3(Math.cos(sa), 0, Math.sin(sa)).multiplyScalar(sw);
+      const e2 = new THREE.Vector3(0, sh, 0);
+      const n = new THREE.Vector3(-Math.sin(sa), 0.55, Math.cos(sa)).normalize();
+      const rel = Math.min(1, Math.max(0.35, (ctr.y - 0.3) / 0.7));
+      const aoT = 0.62 + 0.38 * rel, aoB = aoT * 0.62;
+      b.quadC(
+        [ctr.clone().sub(e1).sub(e2), ctr.clone().add(e1).sub(e2), ctr.clone().add(e1).add(e2), ctr.clone().sub(e1).add(e2)],
+        [n, n, n, n], REGIONS.leaves, [[aoB, aoB, aoB], [aoB, aoB, aoB], [aoT, aoT, aoT], [aoT, aoT, aoT]], q % 2 === 0,
+      );
+    }
+  }
+  return b.build();
+}
+
+/**
+ * Moreton Bay fig, height 1: a short, massive, buttressed trunk, a few limbs spreading wide and low and a very
+ * dense, dark, flat-topped dome that reaches well past the trunk (crown radius ~0.46).
+ */
+export function figGeometry(seed = 1): THREE.BufferGeometry {
+  const b = new Builder();
+  const r = rng(seed);
+  const reg = REGIONS.barkDark;
+  const bark = (i: number, k: number): RGB => {
+    const n = Math.sin(i * 5.3 + k * 17.7 + seed) * 0.5 + 0.5;
+    const v = 0.7 + n * 0.3;
+    return [v * 0.95, v * 0.88, v * 0.8];
+  };
+  const flare = [2.4, 1.6, 1.15, 1.0, 0.95];
+  const trunk: THREE.Vector3[] = flare.map((_, i) => new THREE.Vector3(0, -0.05 + 0.3 * (i / 4) ** 1.2, 0));
+  b.tube(trunk, flare.map((f, i) => 0.03 * f * (1 - 0.1 * i / 4)), 9, reg, bark);
+  const top = trunk[4].clone();
+  const clumps: { c: THREE.Vector3; R: number }[] = [];
+  const nl = 6;
+  const a0 = r() * Math.PI * 2;
+  for (let k = 0; k < nl; k++) {
+    const a = a0 + (k / nl) * Math.PI * 2 + (r() - 0.5) * 0.6;
+    const out = new THREE.Vector3(Math.cos(a), 0, Math.sin(a));
+    const reach = 0.3 + r() * 0.12;
+    const pts = [[0, 0], [0.3, 0.07], [0.65, 0.14], [1, 0.2]].map(([f, dy]) => top.clone().addScaledVector(out, f * reach).add(new THREE.Vector3(0, dy + r() * 0.02, 0)));
+    b.tube(pts, [0.024, 0.016, 0.009, 0.005], 6, reg, bark);
+    clumps.push({ c: pts[3].clone().add(new THREE.Vector3(0, 0.12, 0)), R: 0.2 });
+    clumps.push({ c: pts[2].clone().add(new THREE.Vector3(0, 0.2, 0)), R: 0.22 });
+  }
+  clumps.push({ c: top.clone().add(new THREE.Vector3(0, 0.45, 0)), R: 0.26 });
+  // the dome: flat-topped, so the clumps follow a shallow ellipsoid; cards face outward and lie flat on top
+  const cy = 0.62, ry = 0.36, rx = 0.47;
+  for (const { c, R } of clumps) {
+    for (let q = 0; q < 24; q++) {
+      const u = r() * 2 - 1, a = r() * Math.PI * 2, sq = Math.sqrt(1 - u * u);
+      const dir = new THREE.Vector3(Math.cos(a) * sq, u, Math.sin(a) * sq);
+      const ctr = c.clone().addScaledVector(dir, R * (0.2 + 0.7 * r()));
+      ctr.y = Math.min(ctr.y, 0.97);
+      const e = new THREE.Vector3((ctr.x) / rx, (ctr.y - cy) / ry, ctr.z / rx);
+      const len = e.length();
+      const nrm = e.clone().normalize();
+      nrm.y += 0.4;
+      nrm.normalize();
+      const flat = q % 3 === 0;
+      const nn = flat ? new THREE.Vector3((r() - 0.5) * 0.4, 1, (r() - 0.5) * 0.4).normalize() : dir.clone().add(new THREE.Vector3(0, 0.3, 0)).normalize();
+      const t1 = new THREE.Vector3().crossVectors(nn, Math.abs(nn.y) > 0.9 ? new THREE.Vector3(1, 0, 0) : UP).normalize();
+      const t2 = new THREE.Vector3().crossVectors(nn, t1).normalize();
+      const sp = r() * Math.PI * 2;
+      const s = R * (0.62 + r() * 0.25);
+      const e1 = t1.clone().multiplyScalar(Math.cos(sp)).addScaledVector(t2, Math.sin(sp)).multiplyScalar(s);
+      const e2 = t1.clone().multiplyScalar(-Math.sin(sp)).addScaledVector(t2, Math.cos(sp)).multiplyScalar(s);
+      const p = [ctr.clone().sub(e1).sub(e2), ctr.clone().add(e1).sub(e2), ctr.clone().add(e1).add(e2), ctr.clone().sub(e1).add(e2)];
+      const ao = (0.5 + 0.5 * Math.min(1, len)) * (0.7 + 0.3 * Math.min(1, Math.max(0, 0.5 + 0.5 * e.y)));
+      b.quadC(p, [nrm, nrm, nrm, nrm], REGIONS.leaves, p.map(() => [ao, ao, ao] as RGB), q % 2 === 0);
+    }
+  }
+  return b.build();
+}
+
+/**
+ * Norfolk Island pine (Araucaria heterophylla), height 1: a dead-straight trunk and whorls of five horizontal
+ * branches every few percent of the height, shortening to a spire, each branch a flat spray of needles with
+ * upturned tips. Perfectly symmetric, crown radius ~0.16 at the base of the foliage.
+ */
+export function norfolkPineGeometry(seed = 1): THREE.BufferGeometry {
+  const b = new Builder();
+  const r = rng(seed);
+  b.limb(new THREE.Vector3(0, -0.05, 0), new THREE.Vector3(0, 0.98, 0), 0.0125, 0.003, 7, REGIONS.barkDark, 0.55, 0.7);
+  const whorls = 17;
+  const y0 = 0.22;
+  for (let k = 0; k < whorls; k++) {
+    const rel = k / (whorls - 1);
+    const y = y0 + rel * (0.94 - y0);
+    const len = 0.04 + 0.13 * Math.pow(1 - rel, 0.85);
+    const twist = r() * 1.2 + k * 0.63;
+    const ao = 0.5 + 0.5 * rel;
+    for (let j = 0; j < 5; j++) {
+      const a = twist + (j / 5) * Math.PI * 2;
+      const dir = new THREE.Vector3(Math.cos(a), 0, Math.sin(a));
+      const side = new THREE.Vector3(-dir.z, 0, dir.x);
+      const w = len * 0.55;
+      // the branch dips a little, then the tip curves up
+      const p0 = dir.clone().multiplyScalar(0.005).setY(y);
+      const p1 = dir.clone().multiplyScalar(len).setY(y + len * 0.12);
+      const nO = new THREE.Vector3(0, 1, 0).addScaledVector(dir, 0.2).normalize();
+      b.quad(
+        [p0.clone().addScaledVector(side, -w * 0.3), p1.clone().addScaledVector(side, -w), p1.clone().addScaledVector(side, w), p0.clone().addScaledVector(side, w * 0.3)],
+        [nO, nO, nO, nO], REGIONS.branch, [ao * 0.7, ao, ao, ao * 0.7], j % 2 === 0,
+      );
+      // a hanging curtain under the spray gives the tier its thickness from the side
+      const dn = new THREE.Vector3(0, -len * 0.3, 0);
+      b.quad(
+        [p0.clone().add(dn).addScaledVector(side, -w * 0.15), p1.clone().add(dn).addScaledVector(side, -w * 0.4), p1.clone().addScaledVector(side, w * 0.4).setY(y + len * 0.2), p0.clone().addScaledVector(side, w * 0.15).setY(y + 0.01)],
+        [nO, nO, nO, nO], REGIONS.branch, [ao * 0.55, ao * 0.7, ao, ao * 0.8], j % 2 === 1, [0.1, 0.9],
+      );
+    }
+  }
+  // leader
+  for (let j = 0; j < 2; j++) {
+    const a = (j / 2) * Math.PI;
+    const d = new THREE.Vector3(Math.cos(a), 0, Math.sin(a)).multiplyScalar(0.03);
+    b.quad([new THREE.Vector3(-d.x, 0.86, -d.z), new THREE.Vector3(d.x, 0.86, d.z), new THREE.Vector3(d.x * 0.1, 1.03, d.z * 0.1), new THREE.Vector3(-d.x * 0.1, 1.03, -d.z * 0.1)], [UP, UP, UP, UP], REGIONS.branch, [0.9, 0.9, 1, 1]);
+  }
+  return b.build();
+}

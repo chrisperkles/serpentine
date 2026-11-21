@@ -166,6 +166,9 @@ export class Life extends WorldGroup {
   private nextDescender = 6;
   private nextClimber = 2;
   private carFree = false;
+  /** +1 drive on the right, -1 on the left (biome.leftHand). */
+  private keep = 1;
+  private suburb = false;
   private halfWidth = 3.1;
   private joggers: Jogger[] = [];
   private benches: BenchSpot[] = [];
@@ -188,6 +191,8 @@ export class Life extends WorldGroup {
     this.route = route;
     this.groundAt = groundAt;
     this.carFree = biome?.carFree === true;
+    this.keep = biome?.leftHand ? -1 : 1;
+    this.suburb = biome?.suburb === true;
     this.halfWidth = halfWidth;
     const r = rng(7);
     // --- paragliders over the take-off sites
@@ -217,6 +222,13 @@ export class Life extends WorldGroup {
       }
     }
     if (biome?.id === 'mediterranean') await this.buildMediterranean(route, index, groundAt, coverAt, r);
+    if (this.suburb) {
+      // a suburb: no cattle, gliders or jackdaws; cars on the left, people on the paths
+      this.index = index;
+      this.coverAt = coverAt;
+      await this.buildSuburb(index, osm, r);
+      return;
+    }
     if (this.carFree) {
       // a city park: no cattle, no cars; people instead
       this.index = index;
@@ -455,6 +467,57 @@ export class Life extends WorldGroup {
       g.visible = false;
       this.add(g);
       this.pedicabs.push({ obj: g, rider, s: 0, speed: 3 + r() * 1.2, phase: r() * 6, lateral: 1.3, on: false });
+    }
+    for (let i = 0; i < 8; i++) {
+      const c = new Rider({ kit: KITS[i], accent: '#111214', bike: i % 2 ? '#e9e9e4' : '#1a1c1f' });
+      c.visible = false;
+      this.add(c);
+      this.cyclistPool.push(c);
+    }
+  }
+
+  /** Sydney's streets: traffic, walkers on the coastal path and promenades, groups on the lawns, a few cyclists. */
+  private async buildSuburb(index: RouteIndex, osm: OsmWorld, r: () => number) {
+    const [hatch, van, moto, kit] = await Promise.all([loadModel('car-hatchback.glb'), loadModel('car-van.glb'), loadModel('motorbike.glb'), PersonKit.load()]);
+    for (let i = 0; i < 5; i++) this.cars.push(tinted(hatch, ['car-hatchback_body'], CAR_COLOURS[i * 2 % CAR_COLOURS.length]));
+    for (let i = 0; i < 2; i++) this.cars.push(tinted(van, ['car-van_body'], CAR_COLOURS[(i * 3 + 4) % CAR_COLOURS.length]));
+    for (let i = 0; i < 2; i++) this.cars.push(tinted(moto, ['moto_tank'], CANOPIES[i + 1]));
+    for (const c of this.cars) {
+      c.visible = false;
+      this.add(c);
+    }
+    // footpaths and promenades within sight of the route: the coastal walk, beach fronts, park paths
+    const paths = osm.roads.filter((l) => {
+      if (!['path', 'footway', 'pedestrian', 'cycleway', 'steps'].includes(l.kind) || l.pts.length < 6) return false;
+      const m = Math.floor(l.pts.length / 4) * 2;
+      return index.nearest(l.pts[m], l.pts[m + 1], 140).index >= 0;
+    });
+    for (let i = 0; i < 70 && paths.length; i++) {
+      const l = paths[Math.floor(r() * paths.length)];
+      const run = r() < 0.3;
+      const p = kit.rigged(Math.floor(r() * kit.count), 0.9 + r() * 0.18);
+      this.add(p);
+      this.walkers.push({
+        obj: p, rig: p, run, pts: l.pts, seg: Math.floor(r() * (l.pts.length / 2 - 1)), t: r(), dir: r() < 0.5 ? 1 : -1,
+        speed: run ? 2.4 + r() * 1.0 : 1.0 + r() * 0.5, phase: r() * 10,
+      });
+    }
+    // groups standing about on lawns and the grass above the beaches
+    for (let i = 0; i < 16; i++) {
+      const g = new THREE.Group();
+      const n = 1 + Math.floor(r() * 3.4);
+      const rad = 0.55 + r() * 0.35;
+      const a0 = r() * Math.PI * 2;
+      for (let k = 0; k < n; k++) {
+        const m = kit.standing(Math.floor(r() * kit.count), 0.9 + r() * 0.18);
+        const a = a0 + (k / n) * Math.PI * 2;
+        m.position.set(n === 1 ? 0 : Math.cos(a) * rad, 0, n === 1 ? 0 : Math.sin(a) * rad);
+        m.rotation.y = n === 1 ? 0 : Math.atan2(-Math.cos(a), -Math.sin(a)) + (r() - 0.5) * 0.7;
+        g.add(m);
+      }
+      g.visible = false;
+      this.add(g);
+      this.clusters.push({ obj: g, placed: false, s: 0 });
     }
     for (let i = 0; i < 8; i++) {
       const c = new Rider({ kit: KITS[i], accent: '#111214', bike: i % 2 ? '#e9e9e4' : '#1a1c1f' });
@@ -754,7 +817,7 @@ export class Life extends WorldGroup {
       this.sit(route, riderS, riderDir);
       this.gather(route, riderS, riderDir);
       this.pedi(dt, route, riderS, riderDir);
-    }
+    } else if (this.suburb) this.gather(route, riderS, riderDir);
     this.ride(dt, route, riderS, riderDir, riderSpeed);
   }
 
@@ -797,7 +860,7 @@ export class Life extends WorldGroup {
         continue;
       }
       const h = p.heading + (c.dir < 0 ? Math.PI : 0);
-      c.obj.position.set(p.x + Math.cos(h) * c.lateral, p.ele + 0.02, p.z + Math.sin(h) * c.lateral);
+      c.obj.position.set(p.x + Math.cos(h) * c.lateral * this.keep, p.ele + 0.02, p.z + Math.sin(h) * c.lateral * this.keep);
       c.obj.rotation.set(-Math.atan(g / 100), Math.PI - h, 0, 'YXZ');
       c.obj.update(dt, v, c.climbing ? 82 : 0, c.climbing ? 0.7 : 0.15, g);
     }
@@ -893,7 +956,7 @@ export class Life extends WorldGroup {
       const p = pointAt(route, v.s, this.tmp);
       const h = p.heading + (v.dir < 0 ? Math.PI : 0);
       // keep right: offset to the right of the vehicle's own direction
-      v.obj.position.set(p.x + Math.cos(h) * v.lateral, p.ele + 0.04, p.z + Math.sin(h) * v.lateral);
+      v.obj.position.set(p.x + Math.cos(h) * v.lateral * this.keep, p.ele + 0.04, p.z + Math.sin(h) * v.lateral * this.keep);
       v.obj.rotation.set(Math.atan((p.grade * v.dir) / 100), -h, 0, 'YXZ');
     }
   }
