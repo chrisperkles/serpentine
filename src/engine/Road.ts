@@ -47,6 +47,8 @@ function roadMaterial(halfWidth: number, biome: Biome, turn = false) {
     // Mallorca: sun-bleached lighter asphalt, mostly no edge lines, asphalt up to the wall
     shader.uniforms.uMed = { value: biome.id === 'mediterranean' ? 1 : 0 };
     shader.uniforms.uAsphalt = { value: tex.color };
+    // Central Park's drives: a solid line splits the lane for people on foot (the inside of the loop) from the wheels
+    shader.uniforms.uLane = { value: biome.carFree ? halfWidth - 2.5 : 0 };
     shader.vertexShader = shader.vertexShader
       .replace('#include <common>', '#include <common>\nattribute vec2 roadUv;\nvarying vec2 vRoad;')
       .replace('#include <begin_vertex>', '#include <begin_vertex>\nvRoad = roadUv;');
@@ -57,6 +59,7 @@ function roadMaterial(halfWidth: number, biome: Biome, turn = false) {
 uniform float uHalf;
 uniform vec2 uDash;
 uniform float uMed;
+uniform float uLane;
 uniform sampler2D uAsphalt;
 varying vec2 vRoad;
 float gPaint;
@@ -94,8 +97,9 @@ float rn(vec2 p) {
   // centre dashes: Austria 6 m / 12 m, Spain (M-1.3) 3.5 m / 9 m
   float dash = step(fract(along / uDash.y), uDash.x / uDash.y);
   float centre = step(a, 0.06) * dash * step(2.6, uHalf) * step(0.01, uDash.x);
-  gPaint = max(edge, centre) * wear;
-  vec3 col = mix(asphalt, paint * wear, max(edge, centre));
+  float lane = step(abs(across + uLane), 0.06) * step(0.01, uLane);
+  gPaint = max(max(edge, centre), lane) * wear;
+  vec3 col = mix(asphalt, paint * wear, max(max(edge, centre), lane));
   // gravel shoulder
   float sh = smoothstep(uHalf - 0.02, uHalf + 0.06, a);
   // a thin dark seam of grit and soil where the asphalt meets the verge
@@ -145,7 +149,7 @@ export class Road extends WorldGroup {
       this.strip({ n: t.loopN, step, x: t.x, z: t.z, ele: t.ele, heading: t.heading, grade: t.grade }, halfWidth, turnMat, 100000);
     }
     // rural delineator posts and guard rails need the terrain: Roadside.ts
-    if (route.category === 'city') this.add(lamps(route, halfWidth));
+    if (route.category === 'city') this.add(biome.parkLamps ? parkLamps(route, halfWidth) : lamps(route, halfWidth));
   }
 
   /** Asphalt ribbon along a polyline, in chunks so frustum culling works on long routes. */
@@ -210,20 +214,40 @@ export class Road extends WorldGroup {
 
 }
 
+/**
+ * Central Park's lamp post (Henry Bacon's 1907 design, still the park's standard): a slim black cast-iron
+ * shaft on a flared base, 3.6 m to the lantern, a round frosted luminaire under a small cap.
+ */
+function parkLamps(route: Route, halfWidth: number): THREE.Group {
+  const iron = new THREE.Color().setRGB(0.05, 0.055, 0.06, THREE.SRGBColorSpace);
+  const glass = new THREE.Color().setRGB(0.9, 0.88, 0.8, THREE.SRGBColorSpace);
+  return lampRow(route, halfWidth + 1.6, 30, mergeColored([
+    [new THREE.CylinderGeometry(0.1, 0.17, 0.7, 10).translate(0, 0.35, 0), iron],
+    [new THREE.CylinderGeometry(0.05, 0.075, 2.6, 10).translate(0, 2.0, 0), iron],
+    [new THREE.CylinderGeometry(0.11, 0.05, 0.22, 10).translate(0, 3.38, 0), iron],
+    [new THREE.SphereGeometry(0.2, 10, 8).scale(1, 1.25, 1).translate(0, 3.7, 0), glass],
+    [new THREE.ConeGeometry(0.2, 0.2, 10).translate(0, 4.02, 0), iron],
+    [new THREE.SphereGeometry(0.04, 6, 5).translate(0, 4.15, 0), iron],
+  ]));
+}
+
 /** Street lamps every 32 m, alternating sides (city routes). */
 function lamps(route: Route, halfWidth: number): THREE.Group {
-  const g = new THREE.Group();
   const pole = new THREE.CylinderGeometry(0.06, 0.09, 6, 8).translate(0, 3, 0);
   const arm = new THREE.BoxGeometry(0.08, 0.08, 1.4).translate(0, 5.95, -0.65);
   const head = new THREE.BoxGeometry(0.34, 0.14, 0.6).translate(0, 5.85, -1.3);
   const metal = new THREE.Color().setRGB(0.18, 0.2, 0.22, THREE.SRGBColorSpace);
-  const geo = mergeColored([
+  return lampRow(route, halfWidth + 1.2, 32, mergeColored([
     [pole, metal],
     [arm, metal],
     [head, new THREE.Color(0.25, 0.26, 0.27)],
-  ]);
+  ]));
+}
+
+function lampRow(route: Route, off: number, every: number, geo: THREE.BufferGeometry): THREE.Group {
+  const g = new THREE.Group();
   const mat = patchMaterial(new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.5, metalness: 0.6 }), { key: 'lamp' });
-  const spacing = Math.round(32 / route.step);
+  const spacing = Math.round(every / route.step);
   const count = Math.ceil(route.n / spacing);
   const mesh = new THREE.InstancedMesh(geo, mat, count);
   const m = new THREE.Matrix4();
@@ -233,7 +257,6 @@ function lamps(route: Route, halfWidth: number): THREE.Group {
   for (let i = 0; i < route.n && k < count; i += spacing) {
     const h = route.heading[i];
     const side = k % 2 ? 1 : -1;
-    const off = halfWidth + 1.2;
     // the arm (local -Z) reaches over the road
     q.setFromAxisAngle(up, -h + (side > 0 ? Math.PI / 2 : -Math.PI / 2));
     m.compose(

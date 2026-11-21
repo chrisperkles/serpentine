@@ -1,0 +1,10 @@
+{
+  "biomeTweaks": {
+    "buildings": "manhattan",
+    "carFree": true,
+    "parkLamps": true,
+    "lawn": true,
+    "centreLine": false,
+    "ferns": false
+  }
+}

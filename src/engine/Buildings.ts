@@ -14,7 +14,7 @@ import { WorldGroup } from './dispose.ts';
 const BUCKET = 600;
 
 // surface ids (vertex attribute `surf`)
-const PLASTER = 0, WOOD = 1, ROOF = 2, TRIM = 3, FLOWERS = 4, GLASSWALL = 5, TIMBER = 6, MALLORCA = 7, MARES = 8;
+const PLASTER = 0, WOOD = 1, ROOF = 2, TRIM = 3, FLOWERS = 4, GLASSWALL = 5, TIMBER = 6, MALLORCA = 7, MARES = 8, MASONRY = 9, CURTAIN = 10;
 
 const srgb = (r: number, g: number, b: number) => new THREE.Color().setRGB(r, g, b, THREE.SRGBColorSpace);
 const WALLS = [srgb(0.95, 0.93, 0.88), srgb(0.97, 0.96, 0.93), srgb(0.93, 0.88, 0.76), srgb(0.9, 0.9, 0.87), srgb(0.95, 0.9, 0.82)];
@@ -32,6 +32,18 @@ const SAVOIE_ROOFS = [srgb(0.3, 0.3, 0.31), srgb(0.36, 0.35, 0.34), srgb(0.25, 0
 const PROV_WALLS = [srgb(0.88, 0.8, 0.66), srgb(0.92, 0.86, 0.74), srgb(0.84, 0.74, 0.6), srgb(0.9, 0.79, 0.62), srgb(0.8, 0.7, 0.58)];
 const PROV_ROOFS = [srgb(0.74, 0.5, 0.38), srgb(0.68, 0.44, 0.32), srgb(0.78, 0.56, 0.43)];
 
+// Manhattan around Central Park: pre-war apartment houses in limestone, buff, red and brown brick,
+// white-brick post-war slabs, brownstone row houses on the side streets; glass towers in Midtown
+const NYC_MASONRY = [
+  srgb(0.8, 0.77, 0.7), srgb(0.76, 0.67, 0.54), srgb(0.72, 0.62, 0.5), srgb(0.56, 0.32, 0.25), srgb(0.47, 0.34, 0.28),
+  srgb(0.85, 0.84, 0.8), srgb(0.66, 0.64, 0.6), srgb(0.7, 0.55, 0.42),
+];
+const NYC_ROWHOUSE = [srgb(0.43, 0.3, 0.25), srgb(0.5, 0.29, 0.23), srgb(0.38, 0.27, 0.23), srgb(0.72, 0.68, 0.6)];
+const NYC_GLASS = [srgb(0.36, 0.46, 0.53), srgb(0.24, 0.3, 0.34), srgb(0.5, 0.58, 0.6), srgb(0.17, 0.19, 0.22), srgb(0.42, 0.5, 0.48)];
+const NYC_ROOFS = [srgb(0.3, 0.3, 0.31), srgb(0.42, 0.41, 0.4), srgb(0.24, 0.24, 0.25), srgb(0.55, 0.54, 0.52)];
+const COPPER = srgb(0.43, 0.62, 0.54);
+const TANK_WOOD = srgb(0.36, 0.27, 0.2);
+
 /** A region's houses (biome `buildings`; scenes can override it through `biomeTweaks`). */
 interface Style {
   /** Mediterranean massing: low tile roofs, short eaves, render or ashlar with louvred shutters. */
@@ -48,6 +60,8 @@ interface Style {
   pitch: [number, number];
   /** Shutter colours, one per house (linear RGB). */
   shutters: [THREE.Vector3, THREE.Vector3];
+  /** City blocks (Manhattan): flat-roofed masonry and glass, drawn from 3D parts where OSM has them. */
+  city?: boolean;
 }
 
 const V = (r: number, g: number, b: number) => new THREE.Vector3(r, g, b);
@@ -68,6 +82,10 @@ const STYLES: Record<Biome['buildings'], Style> = {
   provence: {
     med: true, flatTowns: false, walls: PROV_WALLS, roofs: PROV_ROOFS, woodTop: 0, balcony: 'none', pitch: [17, 23],
     shutters: [V(0.26, 0.38, 0.44), V(0.32, 0.39, 0.26)],
+  },
+  manhattan: {
+    med: false, flatTowns: true, walls: NYC_MASONRY, roofs: NYC_ROOFS, woodTop: 0, balcony: 'none', pitch: [20, 25],
+    shutters: [V(0.2, 0.2, 0.2), V(0.2, 0.2, 0.2)], city: true,
   },
 };
 
@@ -90,9 +108,13 @@ class Builder {
   col: number[] = [];
   surf: number[] = [];
   base: number[] = [];
+  top: number[] = [];
   private y0 = 0;
-  setBase(y: number) {
+  private y1 = 0;
+  /** Ground level and roof level of the block being built (the shader counts floors and draws the cornice from them). */
+  setBase(y: number, top = y) {
     this.y0 = y;
+    this.y1 = top;
   }
   tri(a: THREE.Vector3, b: THREE.Vector3, c: THREE.Vector3, color: THREE.Color, s: number, centre: THREE.Vector3) {
     const n = new THREE.Vector3().subVectors(b, a).cross(new THREE.Vector3().subVectors(c, a));
@@ -103,6 +125,18 @@ class Builder {
       this.col.push(color.r, color.g, color.b);
       this.surf.push(s);
       this.base.push(this.y0);
+      this.top.push(this.y1);
+    }
+  }
+  /** Upright cylinder with a cone cap (a rooftop water tank). */
+  tank(cx: number, cz: number, r: number, y0: number, y1: number, cap: number, color: THREE.Color, s: number) {
+    const c = new THREE.Vector3(cx, (y0 + y1) / 2, cz);
+    const apex = new THREE.Vector3(cx, y1 + cap, cz);
+    const N = 10;
+    const P = (i: number, y: number) => new THREE.Vector3(cx + Math.cos((i / N) * Math.PI * 2) * r, y, cz + Math.sin((i / N) * Math.PI * 2) * r);
+    for (let i = 0; i < N; i++) {
+      this.quad(P(i, y0), P(i + 1, y0), P(i + 1, y1), P(i, y1), color, s, c);
+      this.tri(P(i, y1), P(i + 1, y1), apex, color, s, new THREE.Vector3(cx, y1 - 50, cz));
     }
   }
   quad(a: THREE.Vector3, b: THREE.Vector3, c: THREE.Vector3, d: THREE.Vector3, color: THREE.Color, s: number, centre: THREE.Vector3) {
@@ -143,6 +177,7 @@ function simplify(ring: Float32Array): THREE.Vector2[] {
 function addBuilding(
   bld: Building, b: Builder, heightAt: (x: number, z: number) => number, seed: number, ox: number, oz: number, style: Style,
 ) {
+  if (style.city) return addCityBlock(bld, b, heightAt, seed, ox, oz);
   const med = style.med;
   const ring = simplify(bld.ring);
   if (ring.length < 3) return;
@@ -364,6 +399,110 @@ function addBuilding(
   }
 }
 
+function pointInRing(ring: THREE.Vector2[], x: number, y: number): boolean {
+  let inside = false;
+  for (let i = 0, j = ring.length - 1; i < ring.length; j = i++) {
+    const a = ring[i], c = ring[j];
+    if (a.y > y !== c.y > y && x < ((c.x - a.x) * (y - a.y)) / (c.y - a.y) + a.x) inside = !inside;
+  }
+  return inside;
+}
+
+/**
+ * A Manhattan block or one 3D part of it: straight walls from the ground (or the part's min_height)
+ * to the roof, a parapet, a flat roof or a pyramid top; water tank and bulkhead on plain mid-rises.
+ */
+function addCityBlock(bld: Building, b: Builder, heightAt: (x: number, z: number) => number, seed: number, ox: number, oz: number) {
+  const ring = simplify(bld.ring);
+  if (ring.length < 3) return;
+  let gmin = Infinity, gmax = -Infinity;
+  for (const p of ring) {
+    const h = heightAt(p.x, p.y);
+    if (!Number.isFinite(h)) return;
+    gmin = Math.min(gmin, h);
+    gmax = Math.max(gmax, h);
+  }
+  const height = Math.max(bld.height, 3.5);
+  const top = gmax + height;
+  const bottom = bld.minHeight !== undefined ? gmax + Math.min(bld.minHeight, height - 1) : gmin - 0.6;
+  const local = ring.map((p) => new THREE.Vector2(p.x - ox, p.y - oz));
+  let area = 0, cx = 0, cz = 0;
+  for (let i = 0; i < local.length; i++) {
+    const p = local[i], q = local[(i + 1) % local.length];
+    const w = p.x * q.y - q.x * p.y;
+    area += w;
+    cx += (p.x + q.x) * w;
+    cz += (p.y + q.y) * w;
+  }
+  if (Math.abs(area) < 1) return;
+  cx /= 3 * area;
+  cz /= 3 * area;
+  area = Math.abs(area) / 2;
+  const centre = new THREE.Vector3(cx, (bottom + top) / 2, cz);
+  const mat = bld.material;
+  const tower = height > 125 || ((bld.kind === 'office' || bld.kind === 'commercial') && height > 48 && rnd(seed + 2) > 0.45);
+  const glass = mat === 'glass' || mat === 'metal' || mat === 'steel' || (!mat && !bld.wallColour && tower);
+  const row = !bld.part && height < 21 && area < 420;
+  const set = glass ? NYC_GLASS : row ? NYC_ROWHOUSE : NYC_MASONRY;
+  const wall = parseColour(bld.wallColour, set[Math.floor(rnd(seed) * set.length)]).clone();
+  // tagged colours are often pure black or white: keep them inside what stone, brick and glass can be
+  const hsl = { h: 0, s: 0, l: 0 };
+  wall.getHSL(hsl);
+  wall.setHSL(hsl.h, Math.min(hsl.s, 0.55), Math.min(Math.max(hsl.l, glass ? 0.02 : 0.05), 0.62));
+  const surf = glass ? CURTAIN : MASONRY;
+  b.setBase(gmax, top);
+  const pyramid = bld.roof === 'pyramidal';
+  const rise = pyramid ? Math.min(bld.roofHeight ?? Math.min(Math.sqrt(area) * 0.6, 9), height - 1) : 0;
+  const wallTop = top - rise;
+  for (let i = 0; i < local.length; i++) {
+    const p = local[i], q = local[(i + 1) % local.length];
+    b.quad(new THREE.Vector3(p.x, bottom, p.y), new THREE.Vector3(q.x, bottom, q.y), new THREE.Vector3(q.x, wallTop, q.y), new THREE.Vector3(p.x, wallTop, p.y), wall, surf, centre);
+  }
+  const roofCentre = new THREE.Vector3(cx, wallTop - 50, cz);
+  if (pyramid) {
+    // copper-green or slate caps of the pre-war towers (the Pierre, the Sherry-Netherland, the San Remo lanterns)
+    const cap = parseColour(bld.roofColour, rnd(seed + 4) > 0.5 ? COPPER : srgb(0.3, 0.31, 0.33));
+    const apex = new THREE.Vector3(cx, top, cz);
+    for (let i = 0; i < local.length; i++) {
+      const p = local[i], q = local[(i + 1) % local.length];
+      b.tri(new THREE.Vector3(p.x, wallTop, p.y), new THREE.Vector3(q.x, wallTop, q.y), apex, cap, TRIM, roofCentre);
+    }
+    return;
+  }
+  // the walls stand a parapet's height above the roof deck
+  const deck = wallTop - (height > 8 && area > 60 ? 0.9 : 0.15);
+  const roofCol = parseColour(bld.roofColour, NYC_ROOFS[Math.floor(rnd(seed + 7) * NYC_ROOFS.length)]);
+  for (const [i, j, k] of THREE.ShapeUtils.triangulateShape(local, [])) {
+    b.tri(new THREE.Vector3(local[i].x, deck, local[i].y), new THREE.Vector3(local[j].x, deck, local[j].y), new THREE.Vector3(local[k].x, deck, local[k].y), roofCol, TRIM, roofCentre);
+  }
+  // what stands on a New York roof: the stair and lift bulkhead, and the wooden water tank on its steel
+  // frame (every building over six floors needs one). Buildings mapped in parts carry their own tops.
+  if (bld.part || glass || area < 160) return;
+  const dir = new THREE.Vector2().subVectors(local[1], local[0]).normalize();
+  const perp = new THREE.Vector2(-dir.y, dir.x);
+  const spot = (du: number, dv: number, clearance: number) => {
+    const x = cx + dir.x * du + perp.x * dv, z = cz + dir.y * du + perp.y * dv;
+    for (const [ax, az] of [[0, 0], [clearance, 0], [-clearance, 0], [0, clearance], [0, -clearance]]) {
+      if (!pointInRing(local, x + ax, z + az)) return null;
+    }
+    return [x, z] as const;
+  };
+  const span = Math.sqrt(area);
+  if (height > 14) {
+    const s = spot((rnd(seed + 31) - 0.5) * span * 0.3, (rnd(seed + 32) - 0.5) * span * 0.3, 3.5);
+    if (s) b.box(s[0], s[1], dir, 2.6 + rnd(seed + 33) * 1.5, 2 + rnd(seed + 34), deck, deck + 3 + rnd(seed + 35) * 1.5, wall, TRIM);
+  }
+  if (height > 20 && height < 95 && rnd(seed + 36) > 0.25) {
+    const s = spot((rnd(seed + 37) > 0.5 ? 1 : -1) * span * 0.24, (rnd(seed + 38) - 0.5) * span * 0.3, 2.6);
+    if (s) {
+      const legs = srgb(0.2, 0.2, 0.21);
+      const y = deck + 2.6 + rnd(seed + 39) * 2;
+      for (const [u, v] of [[-1.1, -1.1], [1.1, -1.1], [1.1, 1.1], [-1.1, 1.1]]) b.box(s[0] + dir.x * u + perp.x * v, s[1] + dir.y * u + perp.y * v, dir, 0.09, 0.09, deck, y, legs, TRIM);
+      b.tank(s[0], s[1], 1.75, y, y + 3.4, 1.1, TANK_WOOD, WOOD);
+    }
+  }
+}
+
 /** Hip roof over any simple footprint by insetting it; false (draw it flat) when the inset folds over. */
 function hipRoof(b: Builder, ring: THREE.Vector2[], eave: number, pitch: number, col: THREE.Color, centre: THREE.Vector3): boolean {
   const n = ring.length;
@@ -415,14 +554,14 @@ function facadeMaterial(style: Style) {
     shader.vertexShader = shader.vertexShader
       .replace(
         '#include <common>',
-        '#include <common>\nattribute float surf;\nattribute float baseY;\nvarying float vSurf;\nvarying float vBaseY;\nvarying vec3 vFNormal;',
+        '#include <common>\nattribute float surf;\nattribute float baseY;\nattribute float topY;\nvarying float vSurf;\nvarying float vBaseY;\nvarying float vTopY;\nvarying vec3 vFNormal;',
       )
       .replace(
         '#include <beginnormal_vertex>',
-        '#include <beginnormal_vertex>\nvFNormal = normalize(mat3(modelMatrix) * objectNormal);\nvSurf = surf;\nvBaseY = baseY;',
+        '#include <beginnormal_vertex>\nvFNormal = normalize(mat3(modelMatrix) * objectNormal);\nvSurf = surf;\nvBaseY = baseY;\nvTopY = topY;',
       );
     shader.fragmentShader = shader.fragmentShader
-      .replace('#include <common>', '#include <common>\nuniform vec3 uShutA;\nuniform vec3 uShutB;\nvarying float vSurf;\nvarying float vBaseY;\nvarying vec3 vFNormal;\nfloat fHash(vec2 p) { return fract(sin(dot(p, vec2(12.9898, 78.233))) * 43758.5453); }')
+      .replace('#include <common>', '#include <common>\nuniform vec3 uShutA;\nuniform vec3 uShutB;\nvarying float vSurf;\nvarying float vBaseY;\nvarying float vTopY;\nvarying vec3 vFNormal;\nfloat fHash(vec2 p) { return fract(sin(dot(p, vec2(12.9898, 78.233))) * 43758.5453); }')
       .replace(
         '#include <color_fragment>',
         `#include <color_fragment>
@@ -525,6 +664,80 @@ function facadeMaterial(style: Style) {
     vec3 glass = mix(vec3(0.05, 0.05, 0.06), atmoSky(normalize(vec3(r.x, abs(r.y) * 0.6 + 0.05, r.z))) * 0.85, 0.2 + 0.5 * pow(1.0 - abs(dot(-v, n)), 3.0));
     diffuseColor.rgb = mix(diffuseColor.rgb, glass, win);
     diffuseColor.rgb = mix(diffuseColor.rgb, vec3(0.9, 0.88, 0.84), frame);
+  } else if (sid == 9 || sid == 10) {
+    // Manhattan. The street grid is turned 29° off north: measure along the wall, not along an axis
+    float uc = dot(wp.xz, vec2(-n.z, n.x)) / max(length(n.xz), 0.001);
+    float bid = fHash(floor(vec2(vBaseY * 7.31, vTopY * 3.17)));
+    float total = vTopY - vBaseY;
+    vec3 v = normalize(wp - cameraPosition);
+    vec3 r = reflect(v, n);
+    vec3 sky = atmoSky(normalize(vec3(r.x, abs(r.y) * 0.6 + 0.05, r.z)));
+    float fres = pow(1.0 - abs(dot(-v, n)), 3.0);
+    if (sid == 9) {
+      // masonry apartment house: a stone base of two floors, brick above, punched windows in bays,
+      // a belt course over the base and a cornice under the roof
+      float fh = 3.2 + 0.25 * bid;
+      float bay = 2.9 + 1.5 * fHash(vec2(bid, 2.0));
+      // windows smaller than a pixel flicker: fade the pattern to its mean with distance
+      float fine = wallF * (1.0 - smoothstep(0.22, 0.6, max(fwidth(uc) / bay, fwidth(hy) / fh)));
+      vec3 base = diffuseColor.rgb;
+      float storey = floor(hy / fh);
+      // bricks only read from close by; further off the wall is one tone with soot streaks
+      float brick = fHash(floor(vec2(uc / 0.21 + 0.5 * floor(hy / 0.075), hy / 0.075)));
+      float near = 1.0 - smoothstep(25.0, 90.0, camD);
+      base *= 1.0 + (brick - 0.5) * 0.16 * near;
+      base *= 0.93 + 0.1 * fHash(floor(vec2(uc / 6.0, hy / 9.0)) + bid);
+      float podium = (1.0 - step(2.0 * fh, hy)) * step(18.0, total);
+      vec3 stone = mix(vec3(0.62, 0.59, 0.53), base, 0.25);
+      float course = smoothstep(0.0, 0.05, fract(hy / 0.42)) * (0.94 + 0.06 * fHash(vec2(floor(uc / 0.9), floor(hy / 0.42))));
+      base = mix(base, stone * mix(0.82, 1.0, course), podium);
+      float belt = step(18.0, total) * step(abs(hy - 2.0 * fh), 0.16);
+      float cornice = smoothstep(1.5, 1.3, total - hy) * step(12.0, total);
+      float shadowLine = step(1.5, total - hy) * smoothstep(2.1, 1.5, total - hy) * step(12.0, total);
+      base = mix(base, mix(stone, vec3(0.72, 0.69, 0.62), 0.6), max(belt, cornice));
+      base *= 1.0 - 0.3 * shadowLine;
+      float fx = fract(uc / bay);
+      float fy = fract(hy / fh);
+      float ww = 0.19 + 0.07 * fHash(vec2(bid, 5.0));
+      float ground = 1.0 - step(fh, hy);
+      // street floor: wide shop and lobby openings; above: sash windows
+      float win = mix(
+        step(0.5 - ww, fx) * step(fx, 0.5 + ww) * step(0.26, fy) * step(fy, 0.8),
+        step(0.12, fx) * step(fx, 0.88) * step(0.1, fy) * step(fy, 0.82), ground);
+      win *= step(0.35, hy) * step(1.7, total - hy);
+      float sill = (1.0 - ground) * step(0.5 - ww - 0.03, fx) * step(fx, 0.5 + ww + 0.03) * step(0.21, fy) * step(fy, 0.26) * step(1.7, total - hy);
+      float lintel = (1.0 - ground) * step(0.5 - ww - 0.03, fx) * step(fx, 0.5 + ww + 0.03) * step(0.8, fy) * step(fy, 0.86) * step(1.7, total - hy);
+      float sash = win * (1.0 - ground) * max(step(abs(fy - 0.53), 0.012), step(abs(fx - 0.5), 0.006));
+      float cell = fHash(floor(vec2(uc / bay, hy / fh)) + bid * 31.0);
+      // blinds and curtains drawn to different heights, a few rooms lit
+      float blind = step(0.55, cell) * step(0.8 - 0.5 * fract(cell * 7.0), fy);
+      vec3 pane = mix(vec3(0.035, 0.04, 0.05), sky * 0.85, 0.12 + 0.6 * fres);
+      pane = mix(pane, vec3(0.62, 0.59, 0.52), blind * 0.85 * (1.0 - ground));
+      pane = mix(pane, vec3(0.9, 0.72, 0.42) * 0.55, step(0.93, cell) * (1.0 - blind));
+      vec3 col = base;
+      col = mix(col, stone * 1.12, max(sill, lintel) * fine);
+      col = mix(col, pane, win * fine);
+      col = mix(col, vec3(0.78, 0.76, 0.72), sash * fine * near);
+      // the mean of wall and windows where the pattern is too fine to draw
+      col = mix(col, base * 0.86 + sky * 0.03, (1.0 - fine) * wallF * 0.9);
+      diffuseColor.rgb = mix(diffuseColor.rgb, col, wallF);
+    } else {
+      // curtain wall: glass floor to floor between slim mullions, an opaque spandrel band at every slab
+      float fh = 3.8 + 0.5 * bid;
+      float bay = 1.5 + 0.5 * fHash(vec2(bid, 9.0));
+      float fine = 1.0 - smoothstep(0.25, 0.7, max(fwidth(uc) / bay, fwidth(hy) / fh));
+      float fy = fract(hy / fh);
+      float fx = fract(uc / bay);
+      float spandrel = step(fy, 0.2) * fine;
+      float mullion = step(abs(fx - 0.5), 0.035) * fine;
+      float cell = fHash(floor(vec2(uc / bay, hy / fh)) + bid * 17.0);
+      vec3 tint = diffuseColor.rgb;
+      vec3 glassCol = mix(tint * 0.5, sky * mix(vec3(1.0), tint * 2.2, 0.35), 0.35 + 0.6 * fres);
+      glassCol *= 0.94 + 0.12 * cell * fine;
+      glassCol = mix(glassCol, tint * 0.55, spandrel * 0.7);
+      glassCol = mix(glassCol, tint * 0.3 + 0.02, mullion * 0.8);
+      diffuseColor.rgb = mix(diffuseColor.rgb, glassCol, wallF);
+    }
   } else if (sid == 4) {
     // geraniums: red blossoms over green leaves
     float b = fHash(floor(vec2(u * 9.0, wp.y * 9.0)));
@@ -533,7 +746,7 @@ function facadeMaterial(style: Style) {
 }`,
       );
   };
-  return patchMaterial(mat, { key: 'facade3' });
+  return patchMaterial(mat, { key: `facade4:${style.city ? 'city' : 'house'}` });
 }
 
 /** Whether any point along the footprint's edges (every ~1.5 m) lies within `clear` of the route. */
@@ -576,7 +789,8 @@ export class Buildings extends WorldGroup {
       const x = bld.ring[0];
       const z = bld.ring[1];
       // skyline: tall buildings count from any distance
-      if (bld.height < 30 && index.nearest(x, z, corridor).index < 0) return;
+      // 3D parts always come as a set: a tower without its podium would float
+      if (!bld.part && bld.height < 30 && index.nearest(x, z, corridor).index < 0) return;
       // old-town streets are narrower than our road: a house whose footprint reaches the asphalt
       // would stand on it (St. Wolfgang, Kitzbühel). Leave it out; the street keeps its other walls
       if (clear > 0 && index.nearest(x, z, 120).index >= 0 && reachesRoad(bld.ring, index, clear)) return;
@@ -597,6 +811,7 @@ export class Buildings extends WorldGroup {
       geo.setAttribute('color', new THREE.Float32BufferAttribute(builder.col, 3));
       geo.setAttribute('surf', new THREE.Float32BufferAttribute(builder.surf, 1));
       geo.setAttribute('baseY', new THREE.Float32BufferAttribute(builder.base, 1));
+      geo.setAttribute('topY', new THREE.Float32BufferAttribute(builder.top, 1));
       geo.computeVertexNormals();
       const mesh = new THREE.Mesh(geo, mat);
       mesh.position.set(ox, 0, oz);

@@ -321,7 +321,8 @@ export class GroundCover extends THREE.Group {
       const fx = Math.sin(h), fz = -Math.cos(h);
       const rx = Math.cos(h), rz = Math.sin(h);
       for (const side of [-1, 1]) {
-        const tries = Math.round(120 * density);
+        // a mown park lawn is turf: only a few longer tufts along the edge and around the trees
+        const tries = Math.round(120 * density * (B.lawn ? 0.1 : 1));
         for (let k = 0; k < tries; k++) {
           const u = r();
           // denser verge right next to the asphalt, patchier meadow further out

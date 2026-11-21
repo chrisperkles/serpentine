@@ -2,6 +2,8 @@
 // for preset routes into public/osm/<id>.json so presets load instantly.
 // Run: node scripts/bake-osm.mjs [id] [--from=<overpass dump.json>]  (a local dump skips Overpass)
 //      node scripts/bake-osm.mjs <id> --lead-in   adds only the lead-in corridor to the existing file
+//      node scripts/bake-osm.mjs <id> --add=<overpass.json>[,<more.json>]   merges already fetched elements into the
+//        existing file without asking Overpass (3D building parts and park details for Central Park)
 import { readFileSync, writeFileSync, mkdirSync } from 'node:fs';
 
 const CORRIDOR = 420;
@@ -17,7 +19,7 @@ const KEEP = [
   'building:colour', 'building:material', 'roof:orientation', 'highway', 'leaf_type', 'leaf_cycle', 'man_made',
   'tower:type', 'tower:construction', 'barrier', 'power', 'amenity', 'tourism', 'historic', 'information', 'waterway',
   'surface', 'name', 'sport', 'leisure', 'colour', 'aerialway', 'bridge', 'tunnel', 'width', 'lanes', 'denotation',
-  'oneway', 'junction',
+  'oneway', 'junction', 'building:part', 'min_height', 'roof:height', 'layer',
 ];
 // land cover and roadside features the renderer uses beyond forests/buildings
 const EXTRA = [
@@ -56,6 +58,8 @@ function boxes(coords, corridor) {
 const query = (bs) => `[out:json][timeout:120][maxsize:536870912];(${bs.map((b) =>
   `way["landuse"="forest"](${b});relation["landuse"="forest"](${b});way["natural"="wood"](${b});relation["natural"="wood"](${b});` +
   `way["natural"="water"](${b});relation["natural"="water"](${b});way["building"](${b});way["highway"](${b});node["natural"="tree"](${b});` +
+  // 3D buildings: parts with their own height and min_height (setbacks, towers), multipolygon buildings (courtyards)
+  `way["building:part"](${b});relation["building:part"](${b});relation["building"](${b});` +
   EXTRA.map((q) => `${q}(${b});`).join('')).join('')});out geom qt;`;
 
 /** Elements of a full Overpass dump that touch any of the corridor boxes. */
@@ -64,7 +68,7 @@ function fromDump(file, bs) {
   const rects = bs.map((b) => b.split(',').map(Number)); // s,w,n,e
   const hit = (lat, lon) => rects.some(([s, w, n, e]) => lat >= s && lat <= n && lon >= w && lon <= e);
   const wanted = (t) =>
-    t.landuse || t.natural || t.building || t.highway || t.barrier || t.power || t.waterway || t.man_made ||
+    t.landuse || t.natural || t.building || t['building:part'] || t.highway || t.barrier || t.power || t.waterway || t.man_made ||
     t.amenity === 'bench' || t.amenity === 'shelter' || t.tourism || t.historic || t.sport === 'free_flying';
   return els.filter((el) => {
     if (!el.tags || !wanted(el.tags)) return false;
@@ -108,6 +112,7 @@ const index = JSON.parse(readFileSync('public/routes/index.json', 'utf8'));
 const only = process.argv.slice(2).find((a) => !a.startsWith('--'));
 const dump = process.argv.slice(2).find((a) => a.startsWith('--from='))?.slice(7);
 const leadInOnly = process.argv.includes('--lead-in');
+const addFiles = process.argv.slice(2).find((a) => a.startsWith('--add='))?.slice(6).split(',');
 for (const { id } of index) {
   if (only && id !== only) continue;
   const route = JSON.parse(readFileSync(`public/routes/${id}.json`, 'utf8'));
@@ -116,15 +121,16 @@ for (const { id } of index) {
   if (line.length < 2) continue;
   const bs = boxes(line, CORRIDOR_OVERRIDE[id] ?? CORRIDOR);
   const seen = new Map();
-  if (leadInOnly) for (const el of JSON.parse(readFileSync(`public/osm/${id}.json`, 'utf8'))) seen.set(el.type + el.id, el);
+  if (leadInOnly || addFiles) for (const el of JSON.parse(readFileSync(`public/osm/${id}.json`, 'utf8'))) seen.set(el.type + el.id, el);
   if (dump) for (const el of fromDump(dump, bs)) seen.set(el.type + el.id, el);
-  for (let i = 0; !dump && i < bs.length; i += 3) {
+  for (const f of addFiles ?? []) for (const el of JSON.parse(readFileSync(f, 'utf8')).elements) if (el.tags) seen.set(el.type + el.id, el);
+  for (let i = 0; !dump && !addFiles && i < bs.length; i += 3) {
     const els = await overpass(query(bs.slice(i, i + 3)));
     for (const el of els) seen.set(el.type + el.id, el);
     process.stdout.write('.');
   }
   // city skylines: tall buildings well beyond the corridor
-  if (route.category === 'city' && !leadInOnly) {
+  if (route.category === 'city' && !leadInOnly && !addFiles) {
     let s = 90, w = 180, n = -90, e = -180;
     for (const [lon, lat] of route.coords) { s = Math.min(s, lat); n = Math.max(n, lat); w = Math.min(w, lon); e = Math.max(e, lon); }
     const dLat = 2500 / 111320, dLon = 2500 / (111320 * Math.cos(((s + n) / 2) * Math.PI / 180));

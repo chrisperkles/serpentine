@@ -47,8 +47,14 @@ export interface Biome {
   dash: [number, number];
   /** false: no centre line at all (narrow mountain roads painted only at the edges). */
   centreLine?: boolean;
-  /** House style (Buildings.ts): Salzburg Flachgau, Mallorca, French ski resort, Provence. */
-  buildings: 'flachgau' | 'mallorca' | 'savoie' | 'provence';
+  /** House style (Buildings.ts): Salzburg Flachgau, Mallorca, French ski resort, Provence, Manhattan. */
+  buildings: 'flachgau' | 'mallorca' | 'savoie' | 'provence' | 'manhattan';
+  /** A park drive closed to cars (Central Park): no traffic; people on foot and more cyclists instead. */
+  carFree?: boolean;
+  /** City routes: low cast-iron park lamp posts instead of street lights. */
+  parkLamps?: boolean;
+  /** Open ground is mown lawn: turf with hardly any tufts. */
+  lawn?: boolean;
 }
 
 export const ALPINE: Biome = {

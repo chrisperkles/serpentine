@@ -7,6 +7,8 @@ Writes public/trees/<id>.bin, read by src/engine/Vegetation.ts.
   python scripts/bake-trees.py gaisberg <chm.tif> <dlt.tif> [--corridor 550]
   python scripts/bake-trees.py gaisberg <chm.tif> <dlt.tif> --lead-in   adds the lead-in corridor
       (scripts/bake-leadin.py) to the existing bin, keeping every tree already in it
+  python scripts/bake-trees.py central-park <chm.tif> - --conifer 0.02   outside Europe there is no
+      leaf-type layer: '-' makes every tree a broadleaf except the given share
 
 Needs rasterio, numpy, scipy, pyproj (use a venv; nothing here runs in the app).
 
@@ -123,17 +125,23 @@ to_ll = Transformer.from_crs(crs, 'EPSG:4326', always_xy=True)
 lon, lat = to_ll.transform(xs, ys)
 
 # species from Copernicus DLT (0 none, 1 broadleaved, 2 coniferous); mixed edges get a share of the other type
-with rasterio.open(dlt_path) as d:
-    dlt = d.read(1)
-    to_d = Transformer.from_crs('EPSG:4326', d.crs, always_xy=True)
-    dx, dy = to_d.transform(lon, lat)
-    r, c = rasterio.transform.rowcol(d.transform, dx, dy)
-    r = np.clip(np.asarray(r), 0, dlt.shape[0] - 1)
-    c = np.clip(np.asarray(c), 0, dlt.shape[1] - 1)
-    leaf = dlt[r, c]
+if dlt_path == '-':
+    leaf = None
+else:
+    with rasterio.open(dlt_path) as d:
+        dlt = d.read(1)
+        to_d = Transformer.from_crs('EPSG:4326', d.crs, always_xy=True)
+        dx, dy = to_d.transform(lon, lat)
+        r, c = rasterio.transform.rowcol(d.transform, dx, dy)
+        r = np.clip(np.asarray(r), 0, dlt.shape[0] - 1)
+        c = np.clip(np.asarray(c), 0, dlt.shape[1] - 1)
+        leaf = dlt[r, c]
 rng = np.random.default_rng(7)
 u = rng.random(len(lon))
-conifer = np.where(leaf == 2, u < 0.86, np.where(leaf == 1, u < 0.12, u < 0.22))
+if leaf is None:
+    conifer = u < (float(sys.argv[sys.argv.index('--conifer') + 1]) if '--conifer' in sys.argv else 0.0)
+else:
+    conifer = np.where(leaf == 2, u < 0.86, np.where(leaf == 1, u < 0.12, u < 0.22))
 # tall narrow tops in closed forest above ~900 m are mostly spruce on the Gaisberg; leave as DLT says
 kind = np.where(conifer, 1, 2).astype(np.uint8)
 

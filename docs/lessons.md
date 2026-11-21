@@ -279,3 +279,17 @@ symptom (what it looked like), cause, fix and where. Newest at the bottom of eac
   `App.tsx` (`SimClock`, the fallback timer), `Engine.frame(dt)` hands `live` to the frame callback;
   `scripts/test-session.ts`.
 
+- **Manhattan was built from Austrian farmhouses.** A route outside the Mediterranean box got the Alpine biome, so
+  Central Park's skyline was white plaster blocks with red hip roofs, cut off at 80 m, plus spruces, cows, cars,
+  delineator-road markings and highway lamps. Fix: a `manhattan` building style (flat roofs, parapets, masonry and
+  curtain-wall facades, water tanks), heights up to 600 m, and OSM `building:part` geometry (own height and
+  `min_height`, colour, material) with the plain outline dropped where parts exist; the scene file turns on
+  `carFree`, `parkLamps` and `lawn`. Where: `Buildings.ts` `addCityBlock`, `osm.ts` `dropOutlines`,
+  `scenes/central-park.json`, `Life.ts` `buildPark`, `Road.ts` `parkLamps`.
+- **Facade bays stretched on Manhattan's grid.** The facade shader measured along a world axis; walls turned 29° off
+  north got bays 14 % too wide and different on the two street directions. Fix (city surfaces): measure along the
+  wall from its normal. Windows smaller than a pixel are faded to the mean of wall and glass with `fwidth`.
+  Where: `Buildings.ts` `facadeMaterial`, surfaces 9 and 10.
+- **`bake-trees.py --fill` planted 123,000 trees in Central Park.** Fill is for closed forest; in a park the canopy
+  peaks alone (13,952 with `--window 0.8`) match the real count. Park trees also need the open-grown model for every
+  tree, or tall trunks carry small crowns. Where: `bake-trees.py`, `Vegetation.ts` (`biome.lawn`).

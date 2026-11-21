@@ -443,7 +443,7 @@ export class Engine {
         )
         .catch((e) => console.warn('props failed', e));
       void world.life
-        .build(route, index, osm, (x, z) => terrain.groundHeight(x, z), (x, z) => this.coverAt(x, z), biome)
+        .build(route, index, osm, (x, z) => terrain.groundHeight(x, z), (x, z) => this.coverAt(x, z), biome, halfWidth)
         .catch((e) => console.warn('life failed', e));
       decorStage = 'Building villages';
       await new Promise((r) => setTimeout(r, 0));

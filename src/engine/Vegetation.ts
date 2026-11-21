@@ -342,7 +342,8 @@ export class Vegetation extends WorldGroup {
       const r1 = hash2(i, 17), r2 = hash2(i, 29);
       const conifer = t.kind[i] === 1;
       // forest edges along the road keep their lower branches, like open-grown trees
-      const edge = t.open[i] === 1 || near.dist < hw + 14;
+      // park trees stand apart on lawns: every one grows the wide, low crown of an open-grown tree
+      const edge = t.open[i] === 1 || near.dist < hw + 14 || o.biome?.lawn === true;
       const cr = t.crown[i];
       const med = o.biome?.evergreen === true;
       if (conifer) {
@@ -356,7 +357,9 @@ export class Vegetation extends WorldGroup {
         if (med) evergreenBroadTint(r1, tint);
         else broadleafTint(day, y, r1, tint);
         // irregular crowns: some taller and narrower, some squat
-        const w = Math.min(Math.max(cr / 0.3, h * 0.5), h * 1.25) * (0.8 + hash2(i, 41) * 0.4);
+        // park elms, planes and oaks spread nearly as wide as they are tall and meet over the drive
+        const lo = o.biome?.lawn ? 0.66 : 0.5;
+        const w = Math.min(Math.max(cr / 0.3, h * lo), h * 1.25) * (0.8 + hash2(i, 41) * 0.4);
         add(edge ? 'beechO' : 'beechF', x, y - 0.3, z, w, h, r2 * 6.283, tint);
       }
     }

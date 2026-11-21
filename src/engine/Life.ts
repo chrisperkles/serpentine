@@ -89,6 +89,18 @@ interface Walker {
   phase: number;
 }
 
+/** Someone on foot on a car-free drive: walking or running along the lane at the edge. */
+interface Jogger {
+  obj: THREE.Object3D;
+  s: number;
+  dir: 1 | -1;
+  speed: number;
+  lateral: number;
+  phase: number;
+  /** Not yet put on the road around the rider. */
+  fresh: boolean;
+}
+
 interface Vehicle {
   obj: THREE.Object3D;
   s: number;
@@ -119,6 +131,9 @@ export class Life extends WorldGroup {
   private cyclists: { obj: Rider; s: number; dir: 1 | -1; speed: number; lateral: number; climbing: boolean }[] = [];
   private nextDescender = 6;
   private nextClimber = 2;
+  private carFree = false;
+  private halfWidth = 3.1;
+  private joggers: Jogger[] = [];
 
   async build(
     route: Route,
@@ -127,9 +142,12 @@ export class Life extends WorldGroup {
     groundAt: (x: number, z: number) => number,
     coverAt: (x: number, z: number) => number,
     biome?: Biome,
+    halfWidth = 3.1,
   ) {
     this.route = route;
     this.groundAt = groundAt;
+    this.carFree = biome?.carFree === true;
+    this.halfWidth = halfWidth;
     const r = rng(7);
     // --- paragliders over the take-off sites
     const takeoffs = osm.pois.filter((p) => p.kind === 'takeoff');
@@ -158,6 +176,11 @@ export class Life extends WorldGroup {
       }
     }
     if (biome?.id === 'mediterranean') await this.buildMediterranean(route, index, groundAt, coverAt, r);
+    if (this.carFree) {
+      // a city park: no cattle, no cars; people instead
+      await this.buildPark(route, index, osm, r);
+      return;
+    }
     // --- cattle: herds on meadows near the road
     const cow = await loadModel('cow.glb');
     let herds = 0;
@@ -262,6 +285,78 @@ export class Life extends WorldGroup {
     for (const c of this.cars) {
       c.visible = false;
       this.add(c);
+    }
+  }
+
+  /**
+   * Central Park's drives are closed to cars: runners and walkers keep to the lane on the inside of
+   * the loop, cyclists share the rest, and the footpaths beside the drive are busy.
+   */
+  private async buildPark(route: Route, index: RouteIndex, osm: OsmWorld, r: () => number) {
+    const walkSrc = await loadModel('person-walk.glb');
+    const TOPS = ['#c0392b', '#f1f1ee', '#2e86de', '#f1c40f', '#111214', '#8e44ad', '#7f8c8d', '#16a085', '#ff5d8f', '#34495e', '#9be15d', '#ff7b00'];
+    let k = 0;
+    const person = () => {
+      const o = tinted(walkSrc, ['person_body'], TOPS[k++ % TOPS.length]);
+      o.scale.setScalar(0.9 + r() * 0.16);
+      this.add(o);
+      return o;
+    };
+    // on the drive: three in four run, the rest walk; most go the way the loop goes
+    for (let i = 0; i < 26; i++) {
+      const run = r() < 0.75;
+      this.joggers.push({
+        obj: person(), s: r() * route.length, dir: r() < 0.7 ? 1 : -1, speed: run ? 2.5 + r() * 1.4 : 1.2 + r() * 0.4,
+        lateral: this.halfWidth - 0.6 - r() * 1.6, phase: r() * 10, fresh: true,
+      });
+    }
+    // on the footpaths within sight of the drive
+    const paths = osm.roads.filter((l) => {
+      if (!['path', 'footway', 'pedestrian'].includes(l.kind) || l.pts.length < 6) return false;
+      const m = Math.floor(l.pts.length / 4) * 2;
+      return index.nearest(l.pts[m], l.pts[m + 1], 160).index >= 0;
+    });
+    for (let i = 0; i < 70 && paths.length; i++) {
+      const l = paths[Math.floor(r() * paths.length)];
+      this.walkers.push({
+        obj: person(), pts: l.pts, seg: Math.floor(r() * (l.pts.length / 2 - 1)), t: r(), dir: r() < 0.5 ? 1 : -1,
+        speed: r() < 0.25 ? 2.4 + r() * 1.0 : 1.0 + r() * 0.5, phase: r() * 10,
+      });
+    }
+    for (let i = 0; i < 8; i++) {
+      const c = new Rider({ kit: KITS[i], accent: '#111214', bike: i % 2 ? '#e9e9e4' : '#1a1c1f' });
+      c.visible = false;
+      this.add(c);
+      this.cyclistPool.push(c);
+    }
+  }
+
+  /** People on a car-free drive: kept around the rider, the ones left behind come back in ahead. */
+  private jog(dt: number, route: Route, riderS: number, riderDir: 1 | -1) {
+    const L = route.length;
+    for (const j of this.joggers) {
+      j.s += j.speed * j.dir * dt;
+      if (route.loop) j.s = ((j.s % L) + L) % L;
+      let rel = (j.s - riderS) * riderDir;
+      if (route.loop) rel = ((((rel + L / 2) % L) + L) % L) - L / 2;
+      if (j.fresh || rel < -120 || rel > 700) {
+        // out of sight: step back in beyond the view ahead (at the start: anywhere along it)
+        j.s = riderS + ((j.fresh ? 30 : 450) + this.rand() * (j.fresh ? 660 : 240)) * riderDir;
+        j.fresh = false;
+        if (route.loop) j.s = ((j.s % L) + L) % L;
+        else if (j.s < 0 || j.s > L) { j.obj.visible = false; continue; }
+      }
+      j.obj.visible = true;
+      const p = pointAt(route, j.s, this.tmp);
+      // the lane for people on foot is on the left of the loop's direction, whichever way they run
+      const side = -j.lateral * riderDir;
+      j.phase += dt * j.speed * 1.9;
+      j.obj.position.set(
+        p.x + Math.cos(p.heading) * side, p.ele + 0.02 + Math.abs(Math.sin(j.phase * Math.PI)) * (j.speed > 2 ? 0.07 : 0.04),
+        p.z + Math.sin(p.heading) * side,
+      );
+      const fx = Math.sin(p.heading) * j.dir, fz = -Math.cos(p.heading) * j.dir;
+      j.obj.rotation.y = Math.atan2(-fx, -fz);
     }
   }
 
@@ -409,11 +504,13 @@ export class Life extends WorldGroup {
       w.obj.rotation.y = Math.atan2(-hx, -hz);
     }
     this.traffic(dt, route, riderS, riderDir, riderSpeed, time);
-    this.ride(dt, route, riderS, riderDir);
+    if (this.carFree) this.jog(dt, route, riderS, riderDir);
+    this.ride(dt, route, riderS, riderDir, riderSpeed);
   }
 
-  private ride(dt: number, route: Route, riderS: number, riderDir: 1 | -1) {
+  private ride(dt: number, route: Route, riderS: number, riderDir: 1 | -1, riderSpeed = 0) {
     if (!this.cyclistPool.length) return;
+    if (this.carFree) return this.parkRide(dt, route, riderS, riderDir, riderSpeed);
     const free = this.cyclistPool.filter((c) => !c.visible);
     const inRoute = (s: number) => route.loop || (s > 0 && s < route.length);
     this.nextDescender -= dt;
@@ -453,6 +550,49 @@ export class Life extends WorldGroup {
       c.obj.position.set(p.x + Math.cos(h) * c.lateral, p.ele + 0.02, p.z + Math.sin(h) * c.lateral);
       c.obj.rotation.set(-Math.atan(g / 100), Math.PI - h, 0, 'YXZ');
       c.obj.update(dt, v, c.climbing ? 82 : 0, c.climbing ? 0.7 : 0.15, g);
+    }
+  }
+
+  /** A one-way park loop: slower riders ahead to pass, now and then a faster one coming through on the left. */
+  private parkRide(dt: number, route: Route, riderS: number, riderDir: 1 | -1, riderSpeed: number) {
+    const free = this.cyclistPool.filter((c) => !c.visible);
+    const L = route.length;
+    const wrap = (s: number) => (route.loop ? ((s % L) + L) % L : s);
+    this.nextClimber -= dt;
+    this.nextDescender -= dt;
+    if (this.nextClimber < 0) {
+      this.nextClimber = 9 + this.rand() * 16;
+      const obj = free.pop();
+      if (obj) {
+        obj.visible = true;
+        this.cyclists.push({ obj, s: wrap(riderS + (260 + this.rand() * 200) * riderDir), dir: riderDir, speed: 4.5 + this.rand() * 3, lateral: 0.4 + this.rand() * 2.2, climbing: true });
+      }
+    }
+    if (this.nextDescender < 0) {
+      this.nextDescender = 35 + this.rand() * 50;
+      const obj = free.pop();
+      if (obj) {
+        obj.visible = true;
+        this.cyclists.push({ obj, s: wrap(riderS - 90 * riderDir), dir: riderDir, speed: Math.max(riderSpeed + 2.5, 9) + this.rand() * 2, lateral: -1.6, climbing: false });
+      }
+    }
+    for (let i = this.cyclists.length - 1; i >= 0; i--) {
+      const c = this.cyclists[i];
+      const p = pointAt(route, c.s, this.tmp);
+      const g = p.grade * c.dir;
+      const v = c.speed * Math.max(0.6, 1 - Math.max(0, g) * 0.04);
+      c.s = wrap(c.s + v * c.dir * dt);
+      let rel = (c.s - riderS) * riderDir;
+      if (route.loop) rel = ((((rel + L / 2) % L) + L) % L) - L / 2;
+      if (rel < -140 || rel > 750 || (!route.loop && (c.s < 0 || c.s > L))) {
+        c.obj.visible = false;
+        this.cyclists.splice(i, 1);
+        continue;
+      }
+      const h = p.heading + (c.dir < 0 ? Math.PI : 0);
+      c.obj.position.set(p.x + Math.cos(h) * c.lateral, p.ele + 0.02, p.z + Math.sin(h) * c.lateral);
+      c.obj.rotation.set(-Math.atan(g / 100), Math.PI - h, 0, 'YXZ');
+      c.obj.update(dt, v, 80, c.climbing ? 0.4 : 0.7, g);
     }
   }
 
