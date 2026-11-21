@@ -512,7 +512,7 @@ export class Engine {
   private buildWaterMask(route: Route, osm: OsmWorld, baked: BakedTrees | null) {
     this.waterMask = null;
     this.canopyMask = null;
-    if (!osm.water.length && !osm.cover.length && !osm.forests.length && !baked) return;
+    if (!osm.water.length && !osm.cover.length && !osm.forests.length && !baked && !(this.biome.streets && osm.parks.length)) return;
     const [bx0, bz0, bx1, bz1] = route.bounds;
     const m = CORRIDOR + 600;
     const x0 = bx0 - m, z0 = bz0 - m;
@@ -547,6 +547,8 @@ export class Engine {
     ctx.fill(pathOf(osm.cover.filter((c) => c.cls === 'meadow').map((c) => c.poly)), 'evenodd');
     // suburbs: parks, gardens and pitches are mown lawn
     if (this.biome.suburb && osm.shore) ctx.fill(pathOf(osm.shore.parks), 'evenodd');
+    // city streets: lawn only inside the parks (Stadtpark, Burggarten, Volksgarten …); the shader and the tufts read it
+    if (this.biome.streets) ctx.fill(pathOf(osm.parks), 'evenodd');
     ctx.fillStyle = '#0000ff';
     ctx.fill(pathOf(osm.cover.filter((c) => c.cls === 'built').map((c) => c.poly)), 'evenodd');
     ctx.globalCompositeOperation = 'source-over';

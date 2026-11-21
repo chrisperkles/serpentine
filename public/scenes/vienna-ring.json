@@ -1,0 +1,14 @@
+{
+  "biomeTweaks": {
+    "buildings": "vienna",
+    "streets": true,
+    "viennaLamps": true,
+    "avenueTrees": true,
+    "streetLife": true,
+    "parkTrees": true,
+    "meadowPush": 0,
+    "centreLine": true,
+    "dash": [3, 6],
+    "ferns": false
+  }
+}

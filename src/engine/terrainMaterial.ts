@@ -39,6 +39,8 @@ export const terrainUniforms = {
   uSandTint: { value: new THREE.Vector3(1, 1, 1) },
   uSandOn: { value: 0 },
   uMeadowTint: { value: new THREE.Vector3(1, 1, 1) },
+  /** City street (biome.streets): pavement beside the road, lawn only inside OSM parks (mask G). */
+  uStreet: { value: 0 },
 };
 
 /** Beach and sandstone mask over the same area as the water mask (Sydney). */
@@ -73,6 +75,7 @@ export function setTerrainBiome(b: Biome) {
   terrainUniforms.uSandTint.value.set(...(b.sand ?? [1, 1, 1]));
   terrainUniforms.uSandOn.value = b.sand ? 1 : 0;
   terrainUniforms.uMeadowTint.value.set(...(b.lawnTint ?? [1, 1, 1]));
+  terrainUniforms.uStreet.value = b.streets ? 1 : 0;
   if (b.karst > 0 && !cliffTex) {
     const load = (f: string, srgb: boolean) => {
       const t = new THREE.TextureLoader().load(f);
@@ -128,6 +131,7 @@ uniform vec2 uMaskOrigin;
 uniform float uMeadowPush;
 uniform float uBareAbove;
 uniform float uKarst;
+uniform float uStreet;
 uniform vec2 uCliffSlope;
 uniform float uRockOchre;
 uniform float uPhotoSea;
@@ -206,7 +210,10 @@ float tBump = 0.0;
   float limestone = uKarst * smoothstep(0.16, 0.07, sat) * smoothstep(0.3, 0.5, L) * (1.0 - canopy) * (1.0 - verge);
   wRock = max(wRock, max(limestone, scree * 0.85));
   wGrass *= 1.0 - max(limestone, scree);
-  wGrass = max(wGrass, (1.0 - wRock) * (1.0 - wSnow) * (1.0 - greyish) * 0.92 * (1.0 - canopy * 0.85) * mix(1.0, 0.55, uKarst));
+  wGrass = max(wGrass, (1.0 - wRock) * (1.0 - wSnow) * (1.0 - greyish) * 0.92 * (1.0 - canopy * 0.85) * mix(1.0, 0.55, uKarst) * (1.0 - uStreet));
+  // city streets: ground is pavement, cobbles and tram bed unless it is a park lawn (mask G) or photographed green
+  float lawn = uStreet * smoothstep(0.3, 0.8, land.g) * (1.0 - wRock);
+  wGrass = mix(wGrass, max(lawn * 0.95, smoothstep(0.04, 0.13, s.g - max(s.r, s.b) * 0.93) * (1.0 - wRock) * (1.0 - canopy)), uStreet);
   float wGravel = (1.0 - wGrass) * (1.0 - wRock) * (1.0 - wSnow);
 
   // photo grading
@@ -237,17 +244,17 @@ float tBump = 0.0;
   float d = 1.0;
   d = mix(d, gd, wGrass);
   d = mix(d, rd, wRock);
-  d = mix(d, 1.0 + (gv - 1.0) * 0.55, wGravel * 0.7);
+  d = mix(d, 1.0 + (gv - 1.0) * 0.55, wGravel * 0.7 * (1.0 - 0.85 * uStreet));
   d = mix(d, 0.97 + 0.06 * gv, wSnow);
   tDetail = mix(1.0, d, near);
-  tBump = (d - 1.0) * near * mix(0.6, 2.2, wRock) * mix(1.0, 0.45, uKarst);
+  tBump = (d - 1.0) * near * mix(0.6, 2.2, wRock) * mix(1.0, 0.45, uKarst) * mix(1.0, 0.35, uStreet);
 
   // close to the camera the photo blurs and smears at grazing angles: keep its colour, not its texels
   float soft = (1.0 - smoothstep(30.0, 180.0, camD));
   vec3 base = mix(tc, area, soft * 0.9);
   // meadows: pull bleached summer-photo grass back to a living green-gold
   float bl = dot(base, vec3(0.3, 0.55, 0.15));
-  float grassy = max(meadow, wGrass * 0.6 * uMeadowPush) * (1.0 - steep) * (1.0 - canopy);
+  float grassy = max(max(meadow, wGrass * 0.6 * uMeadowPush), wGrass * 0.9 * uStreet) * (1.0 - steep) * (1.0 - canopy * (1.0 - uStreet));
   // two tones: living green and dry straw patches, like mown autumn meadows
   float straw = smoothstep(0.55, 0.8, tNoise(p * 0.035) * 0.7 + tNoise(p * 0.21) * 0.3);
   // mown grass has a fairly constant albedo: clamp bright (snowy or bleached) photo texels
@@ -255,10 +262,16 @@ float tBump = 0.0;
   vec3 meadowCol = mix(blc * vec3(0.8, 1.06, 0.5), blc * vec3(1.05, 1.0, 0.62), straw * 0.6) * 1.05 * uMeadowTint;
   float bright = smoothstep(0.5, 0.75, L) * (1.0 - smoothstep(1500.0, 1950.0, vAtmoWorld.y)) * uMeadowPush * (1.0 - scree);
   base = mix(base, meadowCol, clamp(grassy * 0.6 + bright * 0.9 * (1.0 - canopy), 0.0, 1.0));
+  // city streets: pavement is warm grey stone, not the photo's teal or the bleached white of its sunlit squares
+  {
+    float pl = dot(base, vec3(0.3, 0.55, 0.15));
+    vec3 paving = vec3(mix(0.2, min(pl * 0.9, 0.3), 0.55)) * vec3(1.03, 1.0, 0.94);
+    base = mix(base, paving, uStreet * (1.0 - clamp(wGrass * 1.2, 0.0, 1.0)));
+  }
   // under the canopy: shaded forest floor, leaf litter close up
   vec3 litter = vec3(0.3, 0.22, 0.14) * (0.7 + 0.6 * tNoise(p * 0.7));
-  base = mix(base, base * vec3(0.66, 0.64, 0.6), canopy * 0.75 * (1.0 - uKarst));
-  base = mix(base, litter * (0.6 + 0.4 * dot(base, vec3(0.33))), canopy * near * 0.55 * (1.0 - uKarst));
+  base = mix(base, base * vec3(0.66, 0.64, 0.6), canopy * 0.75 * (1.0 - uKarst) * (1.0 - 0.6 * uStreet));
+  base = mix(base, litter * (0.6 + 0.4 * dot(base, vec3(0.33))), canopy * near * 0.55 * (1.0 - uKarst) * (1.0 - uStreet));
   // steep faces: the photo smears vertically, tint rock from the wide average instead
   vec3 rockTint = mix(wide, vec3(dot(wide, vec3(0.33))) * vec3(1.03, 1.0, 0.95), 0.5);
   // karst coasts: the blurred photo mixes in the sea; cliffs and cuts are grey limestone
@@ -286,7 +299,7 @@ float tBump = 0.0;
     float dl = dot(base, vec3(0.3, 0.55, 0.15));
     float lifted = sqrt(dl * dl + 0.085 * 0.085);
     // photo shadows are blue (skylight only): lift them towards a vegetation hue, not their own
-    vec3 vegHue = mix(vec3(0.82, 1.0, 0.68), vec3(1.0, 0.98, 0.8), uKarst);
+    vec3 vegHue = mix(mix(vec3(0.82, 1.0, 0.68), vec3(1.0, 0.98, 0.8), uKarst), vec3(0.98, 0.97, 0.94), uStreet * (1.0 - wGrass));
     float darkW = smoothstep(0.12, 0.02, dl);
     base = mix(base * (lifted / max(dl, 1e-3)), vegHue * lifted, darkW * 0.8);
   }
@@ -321,7 +334,7 @@ float tBump = 0.0;
   base = mix(base, base * min(1.0, soilCap / max(soilL, 1e-3)) * vec3(1.0, 0.95, 0.88), uKarst);
   // the orthophoto's real road is often wider than or offset from our asphalt ribbon: grey,
   // unsaturated photo pixels in the road corridor become verge (grass in the Alps)
-  float photoRoad = verge * smoothstep(0.14, 0.06, sat) * (1.0 - uKarst) * (1.0 - steep);
+  float photoRoad = verge * smoothstep(0.14, 0.06, sat) * (1.0 - uKarst) * (1.0 - steep) * (1.0 - uStreet);
   vec3 vergeGrass = vec3(0.13, 0.18, 0.08) * (0.85 + 0.3 * tNoise(p * 0.8)) * (0.9 + 0.2 * gd);
   base = mix(base, vergeGrass, photoRoad * 0.9);
   // road verges: grey-brown dirt with pale rubble (not the orthophoto's grey asphalt)
