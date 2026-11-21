@@ -4,7 +4,7 @@
 // that every patched material samples (see atmosphere.ts). Recomputed when the sun moves.
 
 import * as THREE from 'three';
-import { DEM_MAX_Z, heightAtMerc, preloadDemForBox } from '../geo/elevation.ts';
+import { DEM_MAX_Z, demTopZoom, hasDetailAt, heightAtMerc, preloadDemForBox, preloadDemLocal } from '../geo/elevation.ts';
 import type { WorldFrame } from '../geo/mercator.ts';
 import { atmo, terrainShadowUniforms, WHITE_TEX } from './atmosphere.ts';
 
@@ -139,13 +139,16 @@ export class TerrainShadow {
     const [mx0, my1] = toMerc(x0, z0);
     const [mx1, my0] = toMerc(x0 + size, z0 + size);
     await preloadDemForBox(mx0, my0, mx1, my1, z);
+    // where the ground is built from fine tiles (1 m lidar) the shadow field must see the same ground: a field from the
+    // coarse DEM stands metres above a hillside that the lidar cut away, and the road's own slope lay in its shadow
+    await preloadDemLocal(mx0, my0, mx1, my1);
     const data = new Float32Array(FIELD * FIELD);
     const cell = size / FIELD;
     for (let j = 0; j < FIELD; j++) {
       const wz = z0 + (j + 0.5) * cell;
       for (let i = 0; i < FIELD; i++) {
         const [mx, my] = toMerc(x0 + (i + 0.5) * cell, wz);
-        const h = heightAtMerc(mx, my, Math.min(z, DEM_MAX_Z));
+        const h = heightAtMerc(mx, my, hasDetailAt(mx, my) ? demTopZoom() : Math.min(z, DEM_MAX_Z));
         data[j * FIELD + i] = h === h ? h : -1e4;
       }
       // keep the page responsive while sampling

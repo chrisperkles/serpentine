@@ -9,7 +9,7 @@ import {
   VignetteEffect,
 } from 'postprocessing';
 import { N8AOPostPass } from 'n8ao';
-import { DEM_MAX_Z, preloadDemForBox } from '../geo/elevation.ts';
+import { preloadDemBest } from '../geo/elevation.ts';
 import { lonLatToWorld } from '../geo/mercator.ts';
 import { ESRI, sourcesFor } from '../geo/imagery.ts';
 import { loadOsmElements, parseOsm, type OsmWorld, type Polygon } from '../geo/osm.ts';
@@ -397,9 +397,9 @@ export class Engine {
         }
         const m = CORRIDOR + 60;
         jobs.push(
-          preloadDemForBox(
+          preloadDemBest(
             (x0 - m) / frame.k + frame.mx0, -(z1 + m) / frame.k + frame.my0,
-            (x1 + m) / frame.k + frame.mx0, -(z0 - m) / frame.k + frame.my0, DEM_MAX_Z,
+            (x1 + m) / frame.k + frame.mx0, -(z0 - m) / frame.k + frame.my0,
           ),
         );
       }

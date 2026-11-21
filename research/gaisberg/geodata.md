@@ -9,7 +9,7 @@ Summary of status:
 
 | # | Item | Status |
 |---|------|--------|
-| 1a | BEV ALS DGM 1 m / DOM 1 m (Austria) | LOGIN NEEDED (blocked for scripted access; not downloaded) |
+| 1a | BEV ALS DTM 1 m (Austria) | WORKS, downloaded 2026-11-21 as windowed COG reads; baked into the terrain (see 1a) |
 | 1b | Land Salzburg DGM 1 m / DOM 1 m (SAGIS) | PARTIAL: format verified on a city test tile, Gaisberg bbox not downloaded |
 | 2 | LoD2 / 3D buildings | NOT FOUND for Land Salzburg; Stadt Salzburg 3D city model exists but is manual |
 | 3 | Meta/WRI canopy height (1 m) | WORKS (v2 and v1) |
@@ -21,14 +21,20 @@ Summary of status:
 
 ## 1. Austrian ALS terrain (DGM and DOM, 1 m)
 
-### 1a. BEV (Bundesamt für Eich- und Vermessungswesen) ALS DTM / DSM 1 m
+### 1a. BEV (Bundesamt für Eich- und Vermessungswesen) ALS DTM, 1 m
 
-- **Status: LOGIN NEEDED (blocked for scripted access).** Not downloaded.
-- Endpoints checked:
-  - `https://data.bev.gv.at/download/ALS/`, `.../ALS/DTM/`, `.../ALS/DTM/20220915/`, `.../ALS/DSM/` all return HTTP 403 with the GeoCat "Forbidden" page. The same 403 is returned for the directory listings. This is an access block for this request, not a missing file.
-- The metadata (INSPIRE geoportal, DSM record) says the product is a 1 m height raster in 55 tiles, with GeoTIFF and COG distribution formats, and CC-BY-4.0 for the DSM record. I did not confirm the DTM licence.
-- Next step: open `data.bev.gv.at/download/ALS/` in a browser to check whether a session or consent is needed. Then download the tiles that cover the bbox. The tile index is the "ALS Kachelübersicht" (PDF and ZIP) on the same path, which I did not open.
-- Not a WORKS result, so no file saved.
+- **Status: WORKS (2026-11-21), in use.** Earlier scripted attempts at the directory listings returned 403; the tile files themselves are plain HTTPS cloud-optimised GeoTIFFs and can be read as windows.
+- **Credit:** ALS DTM 1 m, © Bundesamt für Eich- und Vermessungswesen (BEV), CC BY 4.0. Listed in the README's data table.
+- Tile URL pattern: `https://data.bev.gv.at/download/ALS/DTM/20250915/ALS_DTM_CRS3035RES50000mN{N}E{E}.tif` (50 km tiles in EPSG:3035, N/E are the tile's lower-left corner in metres).
+- File used: `research/gaisberg/data/als/gaisberg_dgm1m_bev_2025_EPSG3035.tif` (gitignored): float32, 1 m, 4856 x 4699 px, EPSG:3035, nodata -9999, covering the route, its lead-in and about 450 m around them. It agrees with the route's stored heights to 0.2 m on average (0.9 m standard deviation).
+- Baked into `public/dem/16/` (80 tiles, 1.6 m per pixel, within 400 m of the route, its lead-in and turnarounds, fading into a smoothed copy of the same lidar over the outer 120 m) and `public/dem/17/` (122 tiles, 0.8 m per pixel, within 90 m, fade 40 m), 14 MB together, listed in `public/dem/index.json`. Reproduce with:
+
+```
+python scripts/bake-dem.py gaisberg research/gaisberg/data/als/gaisberg_dgm1m_bev_2025_EPSG3035.tif --zoom 16 --corridor 400 --fade 120
+python scripts/bake-dem.py gaisberg research/gaisberg/data/als/gaisberg_dgm1m_bev_2025_EPSG3035.tif --zoom 17 --corridor 90 --fade 40
+```
+
+- Notes: it is bare earth, so the real road bed, cuts, fills, ditches and walls are in it. Tile pixels beyond the lidar's edge are stored as 0 0 0 ("no data") and the engine uses the coarser tile there. The lidar and the global 10 m tiles differ by about 0.3 to 1 m at the edge of the baked area (a few metres on steep cliffs).
 
 ### 1b. Land Salzburg (SAGIS) DGM 1 m and DOM 1 m
 
