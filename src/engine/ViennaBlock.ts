@@ -114,8 +114,10 @@ function roofStages(
     y += dy;
   }
   if (cur === ring) return null;
+  // the top of a big block is a flat deck of sheet metal and gravel, not tiles: in the roof's colour it lay
+  // over a whole city block as one mint-green slab
   for (const [i, j, k] of THREE.ShapeUtils.triangulateShape(cur.map((p) => p.clone()), [])) {
-    b.tri(new THREE.Vector3(cur[i].x, y, cur[i].y), new THREE.Vector3(cur[j].x, y, cur[j].y), new THREE.Vector3(cur[k].x, y, cur[k].y), col, VROOF, centre);
+    b.tri(new THREE.Vector3(cur[i].x, y, cur[i].y), new THREE.Vector3(cur[j].x, y, cur[j].y), new THREE.Vector3(cur[k].x, y, cur[k].y), DECK, TRIM, centre);
   }
   return { ring: cur, y };
 }
@@ -281,7 +283,7 @@ export function addViennaBlock(
     roofCol.getHSL(hsl, THREE.SRGBColorSpace);
     roofCol.setHSL(hsl.h, Math.min(hsl.s, 0.6), Math.min(Math.max(hsl.l, 0.1), 0.72), THREE.SRGBColorSpace);
     // OSM's copper green (#6EBE9F) is mint; weathered verdigris under noon sun is greyer and darker
-    if (hsl.h > 0.33 && hsl.h < 0.55) roofCol.lerp(new THREE.Color(0.2, 0.22, 0.21), 0.3).multiplyScalar(0.5);
+    if (hsl.h > 0.33 && hsl.h < 0.55) roofCol.lerp(new THREE.Color(0.2, 0.22, 0.21), 0.62).multiplyScalar(0.62);
   }
 
   // --- walls: the shader counts storeys from baseY and finds the cornice from topY (the eaves)
