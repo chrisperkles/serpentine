@@ -62,7 +62,65 @@ async function fetchDem(z: number, x: number, y: number): Promise<Dem> {
   for (let i = 0; i < data.length; i++) {
     data[i] = px[i * 4] * 256 + px[i * 4 + 1] + px[i * 4 + 2] / 256 - 32768;
   }
+  sanitize(data, z, y);
   return { z, x, y, data };
+}
+
+/**
+ * Terrain tiles carry junk over water: the Hudson beside Central Park has pixels at -31,000 m and
+ * +6,600 m, which drew as needles into the sky. Heights no place on Earth has, and pixels that stand
+ * further from their neighbours than any cliff could, are filled in from the ground around them
+ * (sea level where a whole patch is junk).
+ */
+function sanitize(data: Float32Array, z: number, y: number) {
+  const N = DEM_SIZE;
+  const lat = Math.atan(Math.sinh(Math.PI * (1 - (2 * (y + 0.5)) / 2 ** z)));
+  const pixel = (40075016.7 * Math.cos(lat)) / 2 ** z / N;
+  const limit = Math.max(150, 4 * pixel);
+  let bad: Uint8Array | null = null;
+  const mark = (i: number) => {
+    if (!bad) bad = new Uint8Array(N * N);
+    bad[i] = 1;
+  };
+  for (let i = 0; i < data.length; i++) if (data[i] < -450 || data[i] > 8900) mark(i);
+  const near: number[] = [];
+  for (let r = 0; r < N; r++) {
+    for (let c = 0; c < N; c++) {
+      const i = r * N + c;
+      if (bad?.[i]) continue;
+      near.length = 0;
+      for (let dr = -1; dr <= 1; dr++) {
+        for (let dc = -1; dc <= 1; dc++) {
+          const rr = r + dr, cc = c + dc;
+          if ((dr || dc) && rr >= 0 && cc >= 0 && rr < N && cc < N && !bad?.[rr * N + cc]) near.push(data[rr * N + cc]);
+        }
+      }
+      if (near.length < 3) continue;
+      near.sort((p, q) => p - q);
+      if (Math.abs(data[i] - near[near.length >> 1]) > limit) mark(i);
+    }
+  }
+  if (!bad) return;
+  const flags: Uint8Array = bad;
+  // grow good ground into the holes, a ring of pixels per pass
+  for (let pass = 0; pass < 24; pass++) {
+    const fill: [number, number][] = [];
+    for (let r = 0; r < N; r++) {
+      for (let c = 0; c < N; c++) {
+        const i = r * N + c;
+        if (!flags[i]) continue;
+        let sum = 0, n = 0;
+        for (const [dr, dc] of [[-1, 0], [1, 0], [0, -1], [0, 1]]) {
+          const rr = r + dr, cc = c + dc;
+          if (rr >= 0 && cc >= 0 && rr < N && cc < N && !flags[rr * N + cc]) { sum += data[rr * N + cc]; n++; }
+        }
+        if (n) fill.push([i, sum / n]);
+      }
+    }
+    if (!fill.length) break;
+    for (const [i, v] of fill) { data[i] = v; flags[i] = 0; }
+  }
+  for (let i = 0; i < data.length; i++) if (flags[i]) data[i] = 0;
 }
 
 export function loadDem(z: number, x: number, y: number): Promise<Dem> {

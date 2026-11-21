@@ -300,3 +300,12 @@ symptom (what it looked like), cause, fix and where. Newest at the bottom of eac
   and on baked files with `--despur`. Wachau, Neusiedler See, Wolfgangsee, Sydney and Vienna Ring have spurs too
   (listed by `node scripts/bake-routes.mjs --despur`, not yet applied: lengths and best times shift).
   Where: `scripts/bake-routes.mjs`.
+- **A thin pale needle stood in the sky over Central Park.** Not a mast: the elevation tiles carry junk over the
+  Hudson (pixels at -31,000 m and +6,600 m), and the terrain drew them. Hiding buildings, trees, props and life one
+  by one left it; hiding the terrain removed it. Fix: every DEM tile is cleaned on load: impossible heights and pixels
+  further from their neighbours than a cliff allows (150 m, or four pixels' width at coarse zooms) are filled from
+  the ground around them. Where: `src/geo/elevation.ts` `sanitize`.
+- **Three agents built one route in parallel without stepping on each other.** Each got its own git worktree and Vite
+  port (edits hot-reload a capture otherwise) and its own files: `Buildings.ts`; `treeModels.ts`/`Vegetation.ts`;
+  `Life.ts`/`Props.ts`. The three branches merged without a conflict. New park-only behaviour hangs on biome switches
+  (`carFree`, `lawn`, `parkTrees`), checked with a same-settings Gaisberg still on main and on the branch.
