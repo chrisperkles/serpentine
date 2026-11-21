@@ -435,6 +435,7 @@ function addCityBlock(bld: Building, b: Builder, heightAt: (x: number, z: number
     cz += (p.y + q.y) * w;
   }
   if (Math.abs(area) < 1) return;
+  const sgn = Math.sign(area);
   cx /= 3 * area;
   cz /= 3 * area;
   area = Math.abs(area) / 2;
@@ -445,19 +446,31 @@ function addCityBlock(bld: Building, b: Builder, heightAt: (x: number, z: number
   const row = !bld.part && height < 21 && area < 420;
   const set = glass ? NYC_GLASS : row ? NYC_ROWHOUSE : NYC_MASONRY;
   const wall = parseColour(bld.wallColour, set[Math.floor(rnd(seed) * set.length)]).clone();
-  // tagged colours are often pure black or white: keep them inside what stone, brick and glass can be
-  const hsl = { h: 0, s: 0, l: 0 };
-  wall.getHSL(hsl);
-  wall.setHSL(hsl.h, Math.min(hsl.s, 0.55), Math.min(Math.max(hsl.l, glass ? 0.02 : 0.05), 0.62));
+  if (glass || !bld.wallColour) {
+    // tagged colours are often pure black or white: keep them inside what stone, brick and glass can be
+    const hsl = { h: 0, s: 0, l: 0 };
+    wall.getHSL(hsl);
+    wall.setHSL(hsl.h, Math.min(hsl.s, 0.55), Math.min(Math.max(hsl.l, glass ? 0.02 : 0.05), 0.62));
+  } else {
+    // OSM wall colours on masonry are often garish (a lime-yellow block on Central Park West): pull the hue
+    // towards brick and sandstone, keep only a loose memory of it, and cap saturation and lightness
+    const hsl = { h: 0, s: 0, l: 0 };
+    wall.getHSL(hsl, THREE.SRGBColorSpace);
+    const dh = ((hsl.h - 0.07 + 1.5) % 1) - 0.5;
+    const h = 0.07 + Math.max(-0.05, Math.min(0.05, dh * 0.4));
+    wall.setHSL(h, Math.min(hsl.s * 0.8, 0.3), Math.min(Math.max(hsl.l, 0.3), 0.72), THREE.SRGBColorSpace);
+  }
   const surf = glass ? CURTAIN : MASONRY;
-  b.setBase(gmax, top);
   const pyramid = bld.roof === 'pyramidal';
   const rise = pyramid ? Math.min(bld.roofHeight ?? Math.min(Math.sqrt(area) * 0.6, 9), height - 1) : 0;
   const wallTop = top - rise;
+  // the shader counts storeys and finds the cornice from the wall's own top, not the pyramid's apex
+  b.setBase(gmax, wallTop);
   for (let i = 0; i < local.length; i++) {
     const p = local[i], q = local[(i + 1) % local.length];
     b.quad(new THREE.Vector3(p.x, bottom, p.y), new THREE.Vector3(q.x, bottom, q.y), new THREE.Vector3(q.x, wallTop, q.y), new THREE.Vector3(p.x, wallTop, p.y), wall, surf, centre);
   }
+  if (!glass && height > 12 && height < 160) cornice(b, local, sgn, wallTop, wall);
   const roofCentre = new THREE.Vector3(cx, wallTop - 50, cz);
   if (pyramid) {
     // copper-green or slate caps of the pre-war towers (the Pierre, the Sherry-Netherland, the San Remo lanterns)
@@ -500,6 +513,42 @@ function addCityBlock(bld: Building, b: Builder, heightAt: (x: number, z: number
       for (const [u, v] of [[-1.1, -1.1], [1.1, -1.1], [1.1, 1.1], [-1.1, 1.1]]) b.box(s[0] + dir.x * u + perp.x * v, s[1] + dir.y * u + perp.y * v, dir, 0.09, 0.09, deck, y, legs, TRIM);
       b.tank(s[0], s[1], 1.75, y, y + 3.4, 1.1, TANK_WOOD, WOOD);
     }
+  }
+}
+
+/**
+ * The projecting stone cornice of a pre-war apartment house: a ledge about half a metre out and a metre tall just
+ * under the parapet, with a thin fillet below it. The outline is offset with mitred corners; every face gets its
+ * own inside point so the lighting normals come out right (the soffit must face down, the top up).
+ */
+function cornice(b: Builder, ring: THREE.Vector2[], sgn: number, wallTop: number, wall: THREE.Color) {
+  const n = ring.length;
+  const out = (i: number) => {
+    const e = new THREE.Vector2().subVectors(ring[(i + 1) % n], ring[i]).normalize();
+    return new THREE.Vector2(e.y * sgn, -e.x * sgn);
+  };
+  const stone = wall.clone().lerp(srgb(0.8, 0.77, 0.7), 0.55).multiplyScalar(1.08);
+  const shade = stone.clone().multiplyScalar(0.8);
+  const offs = (d: number) => ring.map((p, i) => {
+    const n0 = out((i - 1 + n) % n), n1 = out(i);
+    const m = new THREE.Vector2().addVectors(n0, n1).multiplyScalar(d / Math.max(1 + n0.dot(n1), 0.35));
+    return p.clone().add(m);
+  });
+  const big = offs(0.55), small = offs(0.25);
+  const yTop = wallTop - 0.3, yMid = wallTop - 1.2, yLow = wallTop - 1.55;
+  const V = (p: THREE.Vector2, y: number) => new THREE.Vector3(p.x, y, p.y);
+  for (let i = 0; i < n; i++) {
+    const j = (i + 1) % n;
+    const o = out(i);
+    const mid = (a: THREE.Vector2[], y: number) => new THREE.Vector3((a[i].x + a[j].x) / 2, y, (a[i].y + a[j].y) / 2);
+    const inside = (a: THREE.Vector2[], y: number) => mid(a, y).addScaledVector(new THREE.Vector3(o.x, 0, o.y), -50);
+    // main ledge: top, face, soffit
+    b.quad(V(ring[i], yTop), V(ring[j], yTop), V(big[j], yTop), V(big[i], yTop), stone, TRIM, mid(big, yTop - 50));
+    b.quad(V(big[i], yMid), V(big[j], yMid), V(big[j], yTop), V(big[i], yTop), stone, TRIM, inside(big, (yMid + yTop) / 2));
+    b.quad(V(ring[i], yMid), V(ring[j], yMid), V(big[j], yMid), V(big[i], yMid), shade, TRIM, mid(big, yMid + 50));
+    // fillet under it
+    b.quad(V(small[i], yLow), V(small[j], yLow), V(small[j], yMid), V(small[i], yMid), shade, TRIM, inside(small, (yLow + yMid) / 2));
+    b.quad(V(ring[i], yLow), V(ring[j], yLow), V(small[j], yLow), V(small[i], yLow), shade, TRIM, mid(small, yLow + 50));
   }
 }
 
@@ -561,7 +610,7 @@ function facadeMaterial(style: Style) {
         '#include <beginnormal_vertex>\nvFNormal = normalize(mat3(modelMatrix) * objectNormal);\nvSurf = surf;\nvBaseY = baseY;\nvTopY = topY;',
       );
     shader.fragmentShader = shader.fragmentShader
-      .replace('#include <common>', '#include <common>\nuniform vec3 uShutA;\nuniform vec3 uShutB;\nvarying float vSurf;\nvarying float vBaseY;\nvarying float vTopY;\nvarying vec3 vFNormal;\nfloat fHash(vec2 p) { return fract(sin(dot(p, vec2(12.9898, 78.233))) * 43758.5453); }')
+      .replace('#include <common>', '#include <common>\nuniform vec3 uShutA;\nuniform vec3 uShutB;\nvarying float vSurf;\nvarying float vBaseY;\nvarying float vTopY;\nvarying vec3 vFNormal;\nfloat fHash(vec2 p) { return fract(sin(dot(p, vec2(12.9898, 78.233))) * 43758.5453); }\nvec3 awnCol(float h) { return h < 0.2 ? vec3(0.1, 0.22, 0.15) : h < 0.4 ? vec3(0.36, 0.1, 0.11) : h < 0.6 ? vec3(0.09, 0.14, 0.27) : h < 0.8 ? vec3(0.5, 0.37, 0.14) : vec3(0.14, 0.14, 0.15); }')
       .replace(
         '#include <color_fragment>',
         `#include <color_fragment>
@@ -672,57 +721,131 @@ function facadeMaterial(style: Style) {
     vec3 v = normalize(wp - cameraPosition);
     vec3 r = reflect(v, n);
     vec3 sky = atmoSky(normalize(vec3(r.x, abs(r.y) * 0.6 + 0.05, r.z)));
-    float fres = pow(1.0 - abs(dot(-v, n)), 3.0);
+    float fres = pow(max(1.0 - abs(dot(-v, n)), 0.0), 3.0);
     if (sid == 9) {
-      // masonry apartment house: a stone base of two floors, brick above, punched windows in bays,
-      // a belt course over the base and a cornice under the roof
-      float fh = 3.2 + 0.25 * bid;
-      float bay = 2.9 + 1.5 * fHash(vec2(bid, 2.0));
+      // masonry apartment house. Per-building proportions come from hashes of the block's own heights, so
+      // neighbours differ: bay width, window proportions, a base of two or three storeys, piers, belt courses
+      float h2 = fHash(vec2(bid, 2.0)), h3 = fHash(vec2(bid, 3.0)), h4 = fHash(vec2(bid, 4.0));
+      float h5 = fHash(vec2(bid, 5.0)), h6 = fHash(vec2(bid, 6.0)), h7 = fHash(vec2(bid, 7.0));
+      float h8 = fHash(vec2(bid, 8.0)), h9 = fHash(vec2(bid, 9.0)), h10 = fHash(vec2(bid, 10.0));
+      float fh = 3.0 + 0.45 * bid;
+      float bay = 2.6 + 2.0 * h2;
+      float gfh = fh * (1.15 + 0.35 * h3);
+      float tall = step(18.0, total);
+      float mid = step(12.0, total);
+      float baseTop = gfh + tall * (1.0 + step(0.6, h4)) * fh;
       // windows smaller than a pixel flicker: fade the pattern to its mean with distance
       float fine = wallF * (1.0 - smoothstep(0.22, 0.6, max(fwidth(uc) / bay, fwidth(hy) / fh)));
-      vec3 base = diffuseColor.rgb;
-      float storey = floor(hy / fh);
-      // bricks only read from close by; further off the wall is one tone with soot streaks
-      float brick = fHash(floor(vec2(uc / 0.21 + 0.5 * floor(hy / 0.075), hy / 0.075)));
       float near = 1.0 - smoothstep(25.0, 90.0, camD);
-      base *= 1.0 + (brick - 0.5) * 0.16 * near;
-      base *= 0.93 + 0.1 * fHash(floor(vec2(uc / 6.0, hy / 9.0)) + bid);
-      float podium = (1.0 - step(2.0 * fh, hy)) * step(18.0, total);
-      vec3 stone = mix(vec3(0.62, 0.59, 0.53), base, 0.25);
-      float course = smoothstep(0.0, 0.05, fract(hy / 0.42)) * (0.94 + 0.06 * fHash(vec2(floor(uc / 0.9), floor(hy / 0.42))));
-      base = mix(base, stone * mix(0.82, 1.0, course), podium);
-      float belt = step(18.0, total) * step(abs(hy - 2.0 * fh), 0.16);
-      float cornice = smoothstep(1.5, 1.3, total - hy) * step(12.0, total);
-      float shadowLine = step(1.5, total - hy) * smoothstep(2.1, 1.5, total - hy) * step(12.0, total);
+      vec3 base = diffuseColor.rgb;
+      // a loose drift per building and per patch, so rows of the same stone do not read as one tint
+      base *= vec3(1.0 + 0.07 * (h5 - 0.5), 1.0, 1.0 - 0.09 * (h5 - 0.5));
+      // each hashed patch fades to its mean once it is a pixel or two wide, or it aliases into streaks
+      float calm1 = 1.0 - smoothstep(0.2, 0.6, max(fwidth(uc) / 5.0, fwidth(hy) / 7.0));
+      float calm2 = 1.0 - smoothstep(0.2, 0.6, fwidth(uc) / 1.7);
+      base *= 1.0 + (0.9 + 0.14 * fHash(floor(vec2(uc / 5.0, hy / 7.0)) + bid) - 0.97) * calm1;
+      base *= 1.0 + (0.97 + 0.06 * fHash(vec2(floor(uc / 1.7), bid)) - 1.0) * calm2;
+      // bricks (rows with a running bond) and limestone coursing, both only from close by
+      float brick = fHash(floor(vec2(uc / 0.21 + 0.5 * floor(hy / 0.075), hy / 0.075)));
+      float luma = dot(base, vec3(0.3, 0.55, 0.15));
+      float lime = smoothstep(0.3, 0.5, luma);
+      float rowF = fract(hy / mix(0.075, 0.55, lime));
+      base *= 1.0 + (brick - 0.5) * mix(0.2, 0.06, lime) * near;
+      base *= 1.0 - 0.1 * lime * near * (1.0 - smoothstep(0.0, 0.07, rowF));
+      // soot gathers under the cornice and splashes up from the street
+      base *= 1.0 - 0.14 * smoothstep(7.0, 0.0, total - hy) * mid - 0.1 * smoothstep(3.0, 0.0, hy);
+      vec3 stone = mix(vec3(0.66, 0.63, 0.57), base, 0.3);
+      float podium = (1.0 - step(baseTop, hy)) * mid;
+      // rusticated base: a groove between courses, drawn while a course is still several pixels tall
+      float groove = (1.0 - smoothstep(0.0, 0.09, fract(hy / 0.55))) * (1.0 - smoothstep(0.12, 0.4, fwidth(hy) / 0.55));
+      float ashlar = 0.94 + 0.06 * fHash(vec2(floor(uc / 0.9), floor(hy / 0.55)));
+      base = mix(base, stone * (1.0 - 0.3 * groove) * ashlar * mix(1.0, 0.9, lime), podium);
+      // belt courses: over the base, and on tall houses every few storeys
+      float hy2 = hy - gfh;
+      float beltN = 4.0 + floor(h6 * 3.0);
+      float beltPos = abs(hy2 - fh * beltN * floor(hy2 / (fh * beltN) + 0.5));
+      float belt = max(step(beltPos, 0.2) * step(40.0, total) * step(baseTop + fh, hy), tall * step(abs(hy - baseTop), 0.2));
+      float cornice = smoothstep(1.5, 1.3, total - hy) * mid;
+      float shadowLine = smoothstep(2.3, 1.5, total - hy) * step(1.5, total - hy) * mid;
       base = mix(base, mix(stone, vec3(0.72, 0.69, 0.62), 0.6), max(belt, cornice));
-      base *= 1.0 - 0.3 * shadowLine;
+      base *= 1.0 - 0.28 * shadowLine;
+      // piers: a vertical stone strip every few bays on the upper floors of some houses
+      float pierEvery = 3.0 + floor(h7 * 3.0);
+      float fp = fract(uc / (bay * pierEvery));
+      float pier = step(0.55, h8) * step(min(fp, 1.0 - fp) * bay * pierEvery, 0.32) * (1.0 - podium) * step(gfh, hy) * mid;
+      base = mix(base, stone * 1.04, pier * near);
+      // upper floors
       float fx = fract(uc / bay);
-      float fy = fract(hy / fh);
-      float ww = 0.19 + 0.07 * fHash(vec2(bid, 5.0));
-      float ground = 1.0 - step(fh, hy);
-      // street floor: wide shop and lobby openings; above: sash windows
-      float win = mix(
-        step(0.5 - ww, fx) * step(fx, 0.5 + ww) * step(0.26, fy) * step(fy, 0.8),
-        step(0.12, fx) * step(fx, 0.88) * step(0.1, fy) * step(fy, 0.82), ground);
-      win *= step(0.35, hy) * step(1.7, total - hy);
-      float sill = (1.0 - ground) * step(0.5 - ww - 0.03, fx) * step(fx, 0.5 + ww + 0.03) * step(0.21, fy) * step(fy, 0.26) * step(1.7, total - hy);
-      float lintel = (1.0 - ground) * step(0.5 - ww - 0.03, fx) * step(fx, 0.5 + ww + 0.03) * step(0.8, fy) * step(fy, 0.86) * step(1.7, total - hy);
-      float sash = win * (1.0 - ground) * max(step(abs(fy - 0.53), 0.012), step(abs(fx - 0.5), 0.006));
-      float cell = fHash(floor(vec2(uc / bay, hy / fh)) + bid * 31.0);
-      // blinds and curtains drawn to different heights, a few rooms lit
-      float blind = step(0.55, cell) * step(0.8 - 0.5 * fract(cell * 7.0), fy);
+      float fy = fract(hy2 / fh);
+      float ww = 0.15 + 0.13 * h9;
+      float wy0 = 0.2 + 0.06 * h10, wy1 = 0.76 + 0.08 * h2;
+      float inWx = step(0.5 - ww, fx) * step(fx, 0.5 + ww);
+      float up = step(0.0, hy2) * step(1.7, total - hy);
+      float win = inWx * step(wy0, fy) * step(fy, wy1) * up;
+      float cell = fHash(floor(vec2(uc / bay, hy2 / fh)) + bid * 31.0);
+      // sill and lintel in stone; a drip stain under the sill that fades down the wall
+      float sill = inWx * step(wy0 - 0.07, fy) * step(fy, wy0) * up;
+      float lintel = inWx * step(wy1, fy) * step(fy, wy1 + 0.07) * up;
+      float stain = step(0.5 - ww * 0.8, fx) * step(fx, 0.5 + ww * 0.8) * smoothstep(wy0 - 0.4, wy0 - 0.08, fy) * (1.0 - step(wy0 - 0.07, fy)) * up;
+      // the opening is a recess: shadow under the head and down one side
+      float rx = (fx - (0.5 - ww)) / (2.0 * ww);
+      float ry = (wy1 - fy) / (wy1 - wy0);
+      float reveal = 1.0 - 0.55 * smoothstep(0.22, 0.0, ry) - 0.4 * smoothstep(0.16, 0.0, rx);
+      float sash = win * max(step(abs(fy - mix(wy0, wy1, 0.55)), 0.012), step(abs(fx - 0.5), 0.006));
+      float blind = step(0.55, cell) * step(0.8 - 0.5 * fract(cell * 7.0), (fy - wy0) / (wy1 - wy0));
       vec3 pane = mix(vec3(0.035, 0.04, 0.05), sky * 0.85, 0.12 + 0.6 * fres);
-      pane = mix(pane, vec3(0.62, 0.59, 0.52), blind * 0.85 * (1.0 - ground));
+      pane = mix(pane, vec3(0.62, 0.59, 0.52), blind * 0.85);
       pane = mix(pane, vec3(0.9, 0.72, 0.42) * 0.55, step(0.93, cell) * (1.0 - blind));
+      pane *= reveal;
+      // street floor: shop fronts, lobby entrances, windows in the stone
+      float gy = hy / gfh;
+      float shopW = 3.4 + 2.6 * h3;
+      float seg = floor(uc / shopW);
+      float sf = fract(uc / shopW);
+      float sh = fHash(vec2(seg, bid * 13.0));
+      float per = 4.0 + floor(h8 * 3.0);
+      float ent = step(mod(seg, per), 0.5) * mid;
+      float retail = step(0.4, h4) * (1.0 - ent);
+      float ground = 1.0 - step(gfh, hy);
+      vec3 ac = awnCol(fHash(vec2(seg * step(0.6, h6) + 3.0, bid * 5.0)));
+      vec3 shopGlass = mix(vec3(0.05, 0.045, 0.04), sky * 0.7, 0.1 + 0.5 * fres);
+      shopGlass = mix(shopGlass, vec3(0.85, 0.66, 0.4) * 0.5, step(0.5, sh) * 0.45 * (1.0 - fres));
+      vec3 gcol = base;
+      // shop: glass over a dark bulkhead, an awning or a sign band above
+      float shopOpen = step(0.07, sf) * step(sf, 0.93) * step(0.1, gy) * step(gy, 0.7);
+      gcol = mix(gcol, shopGlass * (0.55 + 0.45 * smoothstep(0.52, 0.66, 1.0 - gy)), retail * shopOpen);
+      gcol = mix(gcol, shopGlass * 0.4, retail * step(0.04, sf) * step(sf, 0.96) * step(gy, 0.1));
+      float awning = step(0.55, sh) * retail * step(0.03, sf) * step(sf, 0.97) * step(0.56, gy) * step(gy, 0.8);
+      vec3 stripe = mix(ac, ac * 1.6 + 0.05, step(0.5, fract(uc / 0.5)) * near);
+      gcol = mix(gcol, stripe * (0.75 + 0.25 * smoothstep(0.56, 0.8, gy)), awning);
+      float signBand = (1.0 - step(0.55, sh)) * retail * step(0.72, gy) * step(gy, 0.9) * step(0.04, sf) * step(sf, 0.96);
+      gcol = mix(gcol, ac * 0.55, signBand);
+      gcol = mix(gcol, ac * 1.4 + 0.08, signBand * step(0.78, gy) * step(gy, 0.84) * step(0.2, sf) * step(sf, 0.8) * near);
+      // lobby: dark double door in a stone surround, with a canopy on bigger houses
+      float door = ent * step(0.22, sf) * step(sf, 0.78) * step(gy, 0.64);
+      float surround = ent * step(0.12, sf) * step(sf, 0.88) * step(gy, 0.74) * (1.0 - door);
+      gcol = mix(gcol, stone * 1.08, surround);
+      gcol = mix(gcol, vec3(0.04, 0.035, 0.03) + vec3(0.5, 0.38, 0.2) * step(0.45, fract(sf * 9.0)) * 0.12 * near, door);
+      float big = step(20.0, total);
+      float canopy = ent * step(0.05, sf) * step(sf, 0.95) * step(0.66, gy) * step(gy, 0.78) * big;
+      gcol = mix(gcol, ac * 0.9, canopy);
+      gcol *= 1.0 - 0.45 * ent * big * step(0.54, gy) * step(gy, 0.66) * step(0.12, sf) * step(sf, 0.88);
+      // plain stone ground floor: tall windows in the rustication
+      float gwin = (1.0 - retail) * (1.0 - ent) * step(0.28, sf) * step(sf, 0.72) * step(0.3, gy) * step(gy, 0.78);
+      gcol = mix(gcol, mix(vec3(0.03, 0.035, 0.04), sky * 0.5, 0.1 + 0.5 * fres), gwin);
       vec3 col = base;
-      col = mix(col, stone * 1.12, max(sill, lintel) * fine);
+      col = mix(col, stone * 1.1, max(sill, lintel) * fine);
+      col = mix(col, base * 0.82, stain * 0.5 * near);
       col = mix(col, pane, win * fine);
       col = mix(col, vec3(0.78, 0.76, 0.72), sash * fine * near);
+      col = mix(col, gcol, ground * fine);
       // the mean of wall and windows where the pattern is too fine to draw
-      col = mix(col, base * 0.86 + sky * 0.03, (1.0 - fine) * wallF * 0.9);
+      float meanDark = mix(0.86, 0.76, ground);
+      col = mix(col, base * meanDark + sky * 0.03, (1.0 - fine) * wallF * 0.9);
       diffuseColor.rgb = mix(diffuseColor.rgb, col, wallF);
     } else {
-      // curtain wall: glass floor to floor between slim mullions, an opaque spandrel band at every slab
+      // curtain wall: glass floor to floor between slim mullions, an opaque spandrel band at every slab,
+      // a dark mechanical crown. The glass reflects the sky: low floors the haze of the street, high ones the zenith
       float fh = 3.8 + 0.5 * bid;
       float bay = 1.5 + 0.5 * fHash(vec2(bid, 9.0));
       float fine = 1.0 - smoothstep(0.25, 0.7, max(fwidth(uc) / bay, fwidth(hy) / fh));
@@ -730,12 +853,36 @@ function facadeMaterial(style: Style) {
       float fx = fract(uc / bay);
       float spandrel = step(fy, 0.2) * fine;
       float mullion = step(abs(fx - 0.5), 0.035) * fine;
-      float cell = fHash(floor(vec2(uc / bay, hy / fh)) + bid * 17.0);
+      vec2 ci = floor(vec2(uc / bay, hy / fh));
+      float cell = fHash(ci + bid * 17.0);
+      // groups of panels and whole floors vary in tint, like blinds half drawn and different glass lots
+      float lot = fHash(floor(vec2(uc / (bay * 4.0), hy / (fh * 2.0))) + bid * 5.0);
+      float floorV = fHash(vec2(ci.y, bid * 3.0));
+      float g = clamp(hy / max(total, 1.0), 0.0, 1.0);
+      float bandFine = 1.0 - smoothstep(0.2, 0.6, fwidth(hy) / (fh * 4.0));
       vec3 tint = diffuseColor.rgb;
-      vec3 glassCol = mix(tint * 0.5, sky * mix(vec3(1.0), tint * 2.2, 0.35), 0.35 + 0.6 * fres);
-      glassCol *= 0.94 + 0.12 * cell * fine;
+      // facets of a round tower turn the mirror direction fast: average it with the view direction for a calmer sky
+      vec2 rh = mix(v.xz, r.xz, 0.45);
+      vec3 skyC = atmoSky(normalize(vec3(rh.x, 0.04 + 0.5 * g, rh.y)));
+      vec3 cityC = atmoSky(normalize(vec3(rh.x, 0.02, rh.y))) * 0.5 + tint * 0.1;
+      vec3 refl = mix(cityC, skyC, smoothstep(0.0, 0.3, g));
+      vec3 glassCol = mix(tint * 0.5, refl * mix(vec3(1.0), tint * 2.2, 0.35), 0.4 + 0.55 * fres);
+      // walls turned to the sun are brighter, with a glint where the reflection meets it
+      vec2 sxz = uSunDir.xz / max(length(uSunDir.xz), 1e-4);
+      // round towers are faceted: a soft term keeps the facets from striping at distance
+      float sunSide = mix(0.4, clamp(dot(n.xz, sxz), 0.0, 1.0), 0.6);
+      float sunUp = clamp(uSunDir.y * 2.0 + 0.2, 0.0, 1.0);
+      glassCol *= 1.0 + 0.5 * sunSide * sunUp - 0.12 * (1.0 - sunSide);
+      glassCol += uSunColor * 0.22 * pow(max(dot(r, uSunDir), 0.0), 12.0) * sunUp * fine;
+      glassCol *= (0.93 + 0.14 * cell * fine) * (0.94 + 0.12 * lot * fine) * (0.97 + 0.06 * floorV * bandFine);
       glassCol = mix(glassCol, tint * 0.55, spandrel * 0.7);
       glassCol = mix(glassCol, tint * 0.3 + 0.02, mullion * 0.8);
+      // mechanical crown: opaque louvred band under the roof, and a darker lobby floor at the foot
+      float tallT = step(40.0, total);
+      float crown = step(total - hy, clamp(total * 0.035, 3.0, 9.0)) * tallT;
+      float louvre = 0.8 + 0.2 * step(0.5, fract(hy / 0.7)) * fine;
+      glassCol = mix(glassCol, tint * 0.32 * louvre + 0.015, crown);
+      glassCol *= 1.0 - 0.35 * step(hy, 6.0) * tallT;
       diffuseColor.rgb = mix(diffuseColor.rgb, glassCol, wallF);
     }
   } else if (sid == 4) {
@@ -746,7 +893,7 @@ function facadeMaterial(style: Style) {
 }`,
       );
   };
-  return patchMaterial(mat, { key: `facade4:${style.city ? 'city' : 'house'}` });
+  return patchMaterial(mat, { key: `facade5:${style.city ? 'city' : 'house'}` });
 }
 
 /** Whether any point along the footprint's edges (every ~1.5 m) lies within `clear` of the route. */
