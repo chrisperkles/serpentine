@@ -35,6 +35,11 @@ export interface Building {
   roofHeight?: number;
   /** OSM building:material (brick, glass, concrete …) when tagged. */
   material?: string;
+  /** Raw OSM roof:shape (dome, onion, mansard, round …) and roof:material, kept for city styles that draw them (Vienna). */
+  roofTag?: string;
+  roofMaterial?: string;
+  /** height was tagged (not inferred from levels or the building type). */
+  heightTagged?: boolean;
   /** Timber upper storey forced on or off by a route scene (osmTags "serpentine:wood_top"); random otherwise. */
   woodTop?: boolean;
 }
@@ -94,6 +99,10 @@ export interface OsmWorld {
   barriers: Barrier[];
   pois: Poi[];
   towers: Tower[];
+  /** leisure=park/garden outlines: city styles keep lawn inside them and pavement outside (Vienna). */
+  parks: Polygon[];
+  /** railway=tram centre lines (x,z pairs), one per mapped track (Vienna Ring). */
+  trams: Float32Array[];
 }
 
 type LatLon = { lat: number; lon: number };
@@ -115,8 +124,8 @@ const ENDPOINTS = [
 
 const KEEP_TAGS = [
   'landuse', 'natural', 'building', 'building:levels', 'height', 'roof:shape', 'roof:colour', 'building:colour', 'highway',
-  'building:part', 'min_height', 'roof:height', 'building:material',
-  'leaf_type', 'man_made', 'barrier', 'power', 'amenity', 'tourism', 'historic', 'information', 'name', 'sport', 'leisure',
+  'building:part', 'min_height', 'roof:height', 'building:material', 'roof:material',
+  'railway', 'leaf_type', 'man_made', 'barrier', 'power', 'amenity', 'tourism', 'historic', 'information', 'name', 'sport', 'leisure',
 ];
 
 const COVER: Record<string, CoverClass> = {
@@ -391,6 +400,8 @@ export function parseOsm(route: Route, elements: OsmElement[]): OsmWorld {
   const barriers: Barrier[] = [];
   const pois: Poi[] = [];
   const towers: Tower[] = [];
+  const parks: Polygon[] = [];
+  const trams: Float32Array[] = [];
   // church and defence towers are buildings or scene models; these are the antennas
   const antenna = (t: Record<string, string>) =>
     t.man_made === 'mast' || (t.man_made === 'tower' && (t['tower:type'] === 'communication' || t['tower:type'] === 'bell_tower'));
@@ -431,6 +442,11 @@ export function parseOsm(route: Route, elements: OsmElement[]): OsmWorld {
       }
       continue;
     }
+    if (t.railway === 'tram' && el.type === 'way' && el.geometry) {
+      trams.push(toLine(route, el.geometry));
+      continue;
+    }
+    if ((t.leisure === 'park' || t.leisure === 'garden') && (el.type === 'way' || el.type === 'relation')) parks.push(...polygonsFrom(route, el));
     const coverCls = COVER[t.landuse] ?? COVER[t.natural];
     if (t.landuse === 'forest' || t.natural === 'wood') forests.push(...polygonsFrom(route, el));
     else if (t.natural === 'water') water.push(...polygonsFrom(route, el));
@@ -445,6 +461,7 @@ export function parseOsm(route: Route, elements: OsmElement[]): OsmWorld {
           kind: t['building:part'], part: true, minHeight: Number.isFinite(minHeight) && minHeight > 0 ? minHeight : undefined,
           roofHeight: Number.isFinite(roofHeight) ? roofHeight : undefined, material: t['building:material'],
           wallColour: t['building:colour'], roofColour: t['roof:colour'], name: t.name, explicitRoof: !!rs,
+          roofTag: rs, roofMaterial: t['roof:material'], heightTagged: Number.isFinite(parseFloat(t.height ?? '')),
         });
       }
     } else if (t.building && t.building !== 'no' && el.type === 'relation' && el.members) {
@@ -453,6 +470,7 @@ export function parseOsm(route: Route, elements: OsmElement[]): OsmWorld {
         buildings.push({
           ring: poly.outer, height: buildingHeight(t), roof: 'flat', kind: t.building, material: t['building:material'],
           wallColour: t['building:colour'], roofColour: t['roof:colour'], name: t.name,
+          roofTag: t['roof:shape'], roofMaterial: t['roof:material'], heightTagged: Number.isFinite(parseFloat(t.height ?? '')),
         });
       }
     } else if (t.building && t.building !== 'no' && el.type === 'way' && el.geometry) {
@@ -480,6 +498,8 @@ export function parseOsm(route: Route, elements: OsmElement[]): OsmWorld {
         levels: Number.isFinite(levels) ? levels : undefined,
         wallColour: t['building:colour'], roofColour: t['roof:colour'], name: t.name, explicitRoof: !!roofTag,
         material: t['building:material'],
+        roofTag: roofTag, roofMaterial: t['roof:material'], heightTagged: Number.isFinite(parseFloat(t.height ?? '')),
+        roofHeight: Number.isFinite(parseFloat(t['roof:height'] ?? '')) ? parseFloat(t['roof:height']) : undefined,
         woodTop: t['serpentine:wood_top'] === undefined ? undefined : t['serpentine:wood_top'] === 'yes',
       });
     } else if (t.barrier && el.type === 'way' && el.geometry && !t.area) {
@@ -498,7 +518,7 @@ export function parseOsm(route: Route, elements: OsmElement[]): OsmWorld {
       roads.push({ pts, kind: t.highway, width: ROAD_WIDTH[t.highway] ?? 4 });
     }
   }
-  return { forests, water, buildings: dropOutlines(buildings), roads, trees: new Float32Array(trees), cover, barriers, pois, towers };
+  return { forests, water, buildings: dropOutlines(buildings), roads, trees: new Float32Array(trees), cover, barriers, pois, towers, parks, trams };
 }
 
 function barrierHeight(v?: string): number | undefined {

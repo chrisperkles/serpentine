@@ -48,7 +48,7 @@ export interface Biome {
   /** false: no centre line at all (narrow mountain roads painted only at the edges). */
   centreLine?: boolean;
   /** House style (Buildings.ts): Salzburg Flachgau, Mallorca, French ski resort, Provence, Manhattan. */
-  buildings: 'flachgau' | 'mallorca' | 'savoie' | 'provence' | 'manhattan';
+  buildings: 'flachgau' | 'mallorca' | 'savoie' | 'provence' | 'manhattan' | 'vienna';
   /** A park drive closed to cars (Central Park): no traffic; people on foot and more cyclists instead. */
   carFree?: boolean;
   /** City routes: low cast-iron park lamp posts instead of street lights. */
@@ -57,6 +57,15 @@ export interface Biome {
   lawn?: boolean;
   /** Park trees: elm, plane and oak shapes with New York autumn colour (Central Park) instead of beech and spruce. */
   parkTrees?: boolean;
+  // --- Vienna Ring: a city street between historicist blocks (scenes/vienna-ring.json) ---
+  /** Paved city street: ground beside the road is pavement and cobbles, lawn only inside OSM parks; no tufts elsewhere, no cattle. */
+  streets?: boolean;
+  /** Wrought-iron Viennese street lamps at the OSM lamp positions instead of highway lamps. */
+  viennaLamps?: boolean;
+  /** Avenue trees (lime, plane): narrower crowns than park trees, so rows read as rows. */
+  avenueTrees?: boolean;
+  /** People on the pavements and in the parks; traffic stays. */
+  streetLife?: boolean;
 }
 
 export const ALPINE: Biome = {

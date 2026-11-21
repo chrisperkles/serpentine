@@ -309,3 +309,30 @@ symptom (what it looked like), cause, fix and where. Newest at the bottom of eac
   port (edits hot-reload a capture otherwise) and its own files: `Buildings.ts`; `treeModels.ts`/`Vegetation.ts`;
   `Life.ts`/`Props.ts`. The three branches merged without a conflict. New park-only behaviour hangs on biome switches
   (`carFree`, `lawn`, `parkTrees`), checked with a same-settings Gaisberg still on main and on the branch.
+
+- **The Ring was lined with Salzburg farmhouses, meadow tufts and highway lamps.** A city route got the Alpine biome,
+  so Vienna's Ringstraße showed white plaster blocks with brown shutters and red roofs, long grass along the kerb,
+  edge-line markings, regular highway lamps and (from the OSM data) wooden fences, firewood stacks and Alpine benches.
+  Fix: a `vienna` building style (`ViennaBlock.ts`: five to six storeys with a stone cornice, hip, mansard, gable,
+  dome, onion and spire roofs from `roof:shape`, `roof:height` and the part's colours, chimney stacks; monuments by
+  name or tagged colour) and facade-shader surfaces 11 to 13 (rusticated ground floor with arches and portals,
+  mezzanine, pediments over the piano-nobile windows, plain upper floors, tile courses and dormers on roofs). The scene
+  file switches on biome fields `streets` (pavement beside the road, lawn only inside OSM `leisure=park|garden`, no
+  tufts, cattle, firewood or Alpine fences, no road edge lines), `viennaLamps`, `avenueTrees` and `streetLife`.
+  Where: `ViennaBlock.ts`, `Buildings.ts` (surfaces 11-13, `STYLES.vienna`), `terrainMaterial.ts` (`uStreet`),
+  `GroundCover.ts`, `Props.ts` (`viennaLamps`), `Life.ts` (`buildStreet`), `scenes/vienna-ring.json`.
+- **OSM roof shapes and parts were thrown away at parse time.** `parseOsm` turned every dome, onion and pyramidal part
+  into one pyramid and every other part into a flat deck, and plain buildings lost `roof:height`. Fix: `Building`
+  keeps `roofTag`, `roofMaterial`, `roofHeight` and whether the height was tagged; city styles read them. Also new:
+  `OsmWorld.parks` (leisure parks and gardens) and `trams` (`railway=tram`). Where: `osm.ts`.
+- **The baked Vienna file had no tram tracks.** The task notes said it did; `railway` was not in `KEEP_TAGS`, so the
+  tag was stripped when the file was compacted. Fix: `railway` is kept now, and the surface tram tracks within 200 m of
+  the route (163 ways) were fetched once from Overpass and appended to `public/osm/vienna-ring.json`. Trams run on
+  the chained tracks (`Tram.ts`), cut wherever a track would enter the carriageway.
+- **Pale teal ground and bleached squares on a city route.** The terrain shader calls any non-grey photo pixel grass,
+  pulls the pavement's dark pixels to a "vegetation hue" and clamps bright pixels to meadow green: in Vienna the
+  squares went white and the shadows on the Ring teal. Fix (`uStreet`): ground is warm grey stone with a lowered luma
+  unless it is lawn (park mask in the G channel, or clearly green and not under a crown); no litter under trees, no
+  verge grass at the road, half the gravel relief.
+- **Shared code was left alone for the next style to build on.** New style code lives in `ViennaBlock.ts` and `Tram.ts`;
+  `Buildings.ts` only gained exports, a `Style.vienna` flag and one shader branch, with surface ids 11-13 (Sydney: 14-16).

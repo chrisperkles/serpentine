@@ -11,6 +11,7 @@ import { mergeVertices } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
 import { mergeColored } from './Road.ts';
 import type { Biome } from './biome.ts';
 import { markShared, WorldGroup } from './dispose.ts';
+import { tramLines, tramTrack } from './Tram.ts';
 
 const POI_MODEL: Record<string, string> = {
   bench: 'prop-bench.glb',
@@ -77,7 +78,7 @@ export class Props extends WorldGroup {
     }
     // firewood stacks against farmhouse walls near the road
     osm.buildings.forEach((b, i) => {
-      if (!['house', 'farm', 'farm_auxiliary', 'barn', 'yes', 'detached'].includes(b.kind)) return;
+      if (biome?.streets || !['house', 'farm', 'farm_auxiliary', 'barn', 'yes', 'detached'].includes(b.kind)) return;
       if (hash(i * 7) > 0.32) return;
       const spot = besideWall(b, i);
       if (!spot) return;
@@ -89,6 +90,8 @@ export class Props extends WorldGroup {
     this.add(this.wires(osm, poles, groundAt));
     this.add(this.towers(osm, groundAt, models, biome));
     this.add(this.fences(osm, index, groundAt, halfWidth, biome));
+    if (biome?.viennaLamps) this.add(viennaLamps(route, index, osm, groundAt, halfWidth));
+    if (biome?.streets && osm.trams.length) this.add(tramTrack(tramLines(osm, index, halfWidth + 0.4), groundAt));
     if (biome?.carFree) {
       this.add(parkFurniture(route, index, osm, groundAt, halfWidth));
       await this.outcrops(osm, index, groundAt, halfWidth);
@@ -173,7 +176,7 @@ export class Props extends WorldGroup {
       if (!Number.isFinite(y)) continue;
       if (t.bell) {
         // Mallorcan bell towers are stone with tile caps, and Midtown's are church steeples between skyscrapers: left out rather than drawn Alpine
-        if (biome?.id === 'mediterranean' || biome?.carFree) continue;
+        if (biome?.id === 'mediterranean' || biome?.carFree || biome?.streets) continue;
         // a church tower mapped on its own: white shaft and a slate spire
         const H = t.height || 28;
         const w = Math.min(4, Math.max(2.5, t.r || 3));
@@ -253,7 +256,7 @@ export class Props extends WorldGroup {
     const g = new THREE.Group();
     const med = biome?.id === 'mediterranean';
     const mesh = med ? new MedFences() : null;
-    const park = biome?.carFree ? new ParkBarriers(osm) : null;
+    const park = biome?.carFree || biome?.streets ? new ParkBarriers(osm) : null;
     const wood = patchMaterial(new THREE.MeshLambertMaterial({ color: 0x5a412b }), { key: 'fence' });
     const stone = patchMaterial(new THREE.MeshLambertMaterial({ color: 0x8e8a82 }), { key: 'wall' });
     const post = new THREE.BoxGeometry(0.1, 1.2, 0.1).translate(0, 0.5, 0);
@@ -853,5 +856,50 @@ function parkFurniture(
     if (Number.isFinite(y)) lamps.push(new THREE.Matrix4().makeTranslation(p.x, y - 0.1, p.z));
   }
   inst(lampGeo, 'parklamp', lamps);
+  return g;
+}
+
+/**
+ * Street lamps of the Ring at the places OSM maps them: a slim dark mast on a fluted base, a curved arm over the
+ * carriageway and a cream glass lantern. The arm points at the nearest bit of road; lamps on the asphalt are dropped.
+ */
+function viennaLamps(
+  route: Route, index: RouteIndex, osm: OsmWorld, groundAt: (x: number, z: number) => number, halfWidth: number,
+): THREE.Object3D {
+  const srgb = (r: number, g: number, b: number) => new THREE.Color().setRGB(r, g, b, THREE.SRGBColorSpace);
+  const iron = srgb(0.1, 0.11, 0.11), glass = srgb(0.93, 0.9, 0.78);
+  const geo = mergeColored([
+    [new THREE.CylinderGeometry(0.17, 0.24, 0.95, 10).translate(0, 0.47, 0), iron],
+    [new THREE.CylinderGeometry(0.2, 0.2, 0.1, 10).translate(0, 0.98, 0), iron],
+    [new THREE.CylinderGeometry(0.06, 0.1, 6.0, 8).translate(0, 4.0, 0), iron],
+    [new THREE.CylinderGeometry(0.11, 0.07, 0.25, 8).translate(0, 6.9, 0), iron],
+    [new THREE.BoxGeometry(0.06, 0.06, 1.7).translate(0, 7.05, -0.8), iron],
+    [new THREE.BoxGeometry(0.05, 0.05, 0.5).rotateX(0.6).translate(0, 6.85, -0.25), iron],
+    [new THREE.CylinderGeometry(0.2, 0.3, 0.2, 10).translate(0, 7.0, -1.55), iron],
+    [new THREE.CylinderGeometry(0.28, 0.2, 0.34, 10).translate(0, 6.75, -1.55), glass],
+  ]);
+  const ms: THREE.Matrix4[] = [];
+  const seen = new Set<string>();
+  const q = new THREE.Quaternion(), up = new THREE.Vector3(0, 1, 0), one = new THREE.Vector3(1, 1, 1);
+  for (const p of osm.pois) {
+    if (p.kind !== 'street_lamp') continue;
+    const near = index.nearest(p.x, p.z, 60);
+    if (near.index < 0 || near.dist < halfWidth + 1.0) continue;
+    const key = `${Math.round(p.x / 3)},${Math.round(p.z / 3)}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    const y = groundAt(p.x, p.z);
+    if (!Number.isFinite(y)) continue;
+    const dx = route.x[near.index] - p.x, dz = route.z[near.index] - p.z;
+    q.setFromAxisAngle(up, Math.atan2(-dx, -dz));
+    ms.push(new THREE.Matrix4().compose(new THREE.Vector3(p.x, y - 0.05, p.z), q, one));
+  }
+  const g = new THREE.Group();
+  if (!ms.length) return g;
+  const m = new THREE.InstancedMesh(geo, patchMaterial(new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.5, metalness: 0.5 }), { key: 'viennalamp' }), ms.length);
+  ms.forEach((x, i) => m.setMatrixAt(i, x));
+  m.castShadow = true;
+  m.computeBoundingSphere();
+  g.add(m);
   return g;
 }

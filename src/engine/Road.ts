@@ -49,6 +49,8 @@ function roadMaterial(halfWidth: number, biome: Biome, turn = false) {
     shader.uniforms.uAsphalt = { value: tex.color };
     // Central Park's drives: a solid line splits the lane for people on foot (the inside of the loop) from the wheels
     shader.uniforms.uLane = { value: biome.carFree ? halfWidth - 2.5 : 0 };
+    // city streets carry no edge lines (they are for country roads)
+    shader.uniforms.uStreet = { value: biome.streets ? 1 : 0 };
     shader.vertexShader = shader.vertexShader
       .replace('#include <common>', '#include <common>\nattribute vec2 roadUv;\nvarying vec2 vRoad;')
       .replace('#include <begin_vertex>', '#include <begin_vertex>\nvRoad = roadUv;');
@@ -60,6 +62,7 @@ uniform float uHalf;
 uniform vec2 uDash;
 uniform float uMed;
 uniform float uLane;
+uniform float uStreet;
 uniform sampler2D uAsphalt;
 varying vec2 vRoad;
 float gPaint;
@@ -93,7 +96,7 @@ float rn(vec2 p) {
   asphalt *= 1.0 - 0.12 * track;
   vec3 paint = vec3(0.86, 0.86, 0.82);
   float wear = 0.75 + 0.25 * rn(p * vec2(4.0, 0.6));
-  float edge = step(abs(a - (uHalf - 0.28)), 0.07) * (1.0 - uMed);
+  float edge = step(abs(a - (uHalf - 0.28)), 0.07) * (1.0 - uMed) * (1.0 - uStreet);
   // centre dashes: Austria 6 m / 12 m, Spain (M-1.3) 3.5 m / 9 m
   float dash = step(fract(along / uDash.y), uDash.x / uDash.y);
   float centre = step(a, 0.06) * dash * step(2.6, uHalf) * step(0.01, uDash.x);
@@ -149,7 +152,8 @@ export class Road extends WorldGroup {
       this.strip({ n: t.loopN, step, x: t.x, z: t.z, ele: t.ele, heading: t.heading, grade: t.grade }, halfWidth, turnMat, 100000);
     }
     // rural delineator posts and guard rails need the terrain: Roadside.ts
-    if (route.category === 'city') this.add(biome.parkLamps ? parkLamps(route, halfWidth) : lamps(route, halfWidth));
+    // Vienna's lamps stand where OSM maps them (Props), not on a regular row
+    if (route.category === 'city' && !biome.viennaLamps) this.add(biome.parkLamps ? parkLamps(route, halfWidth) : lamps(route, halfWidth));
   }
 
   /** Asphalt ribbon along a polyline, in chunks so frustum culling works on long routes. */

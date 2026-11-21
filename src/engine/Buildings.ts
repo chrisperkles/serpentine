@@ -10,6 +10,7 @@ import type { RouteIndex } from '../geo/route.ts';
 import { patchMaterial } from './atmosphere.ts';
 import { ALPINE, type Biome } from './biome.ts';
 import { WorldGroup } from './dispose.ts';
+import { addViennaBlock, VIENNA_ROOFS, VIENNA_WALLS } from './ViennaBlock.ts';
 
 const BUCKET = 600;
 
@@ -62,6 +63,8 @@ interface Style {
   shutters: [THREE.Vector3, THREE.Vector3];
   /** City blocks (Manhattan): flat-roofed masonry and glass, drawn from 3D parts where OSM has them. */
   city?: boolean;
+  /** Vienna Ringstrasse historicism (ViennaBlock.ts, facade surfaces 11-13). */
+  vienna?: boolean;
 }
 
 const V = (r: number, g: number, b: number) => new THREE.Vector3(r, g, b);
@@ -87,14 +90,18 @@ const STYLES: Record<Biome['buildings'], Style> = {
     med: false, flatTowns: true, walls: NYC_MASONRY, roofs: NYC_ROOFS, woodTop: 0, balcony: 'none', pitch: [20, 25],
     shutters: [V(0.2, 0.2, 0.2), V(0.2, 0.2, 0.2)], city: true,
   },
+  vienna: {
+    med: false, flatTowns: true, walls: VIENNA_WALLS, roofs: VIENNA_ROOFS, woodTop: 0, balcony: 'none', pitch: [27, 35],
+    shutters: [V(0.2, 0.2, 0.2), V(0.2, 0.2, 0.2)], city: true, vienna: true,
+  },
 };
 
-function rnd(seed: number) {
+export function rnd(seed: number) {
   const x = Math.sin(seed * 12.9898) * 43758.5453;
   return x - Math.floor(x);
 }
 
-function parseColour(c: string | undefined, fallback: THREE.Color): THREE.Color {
+export function parseColour(c: string | undefined, fallback: THREE.Color): THREE.Color {
   if (!c) return fallback;
   try {
     return new THREE.Color().setStyle(c, THREE.SRGBColorSpace);
@@ -103,7 +110,7 @@ function parseColour(c: string | undefined, fallback: THREE.Color): THREE.Color 
   }
 }
 
-class Builder {
+export class Builder {
   pos: number[] = [];
   col: number[] = [];
   surf: number[] = [];
@@ -159,7 +166,7 @@ class Builder {
   }
 }
 
-function simplify(ring: Float32Array): THREE.Vector2[] {
+export function simplify(ring: Float32Array): THREE.Vector2[] {
   const pts: THREE.Vector2[] = [];
   const n = ring.length / 2;
   for (let i = 0; i < n; i++) pts.push(new THREE.Vector2(ring[i * 2], ring[i * 2 + 1]));
@@ -177,6 +184,7 @@ function simplify(ring: Float32Array): THREE.Vector2[] {
 function addBuilding(
   bld: Building, b: Builder, heightAt: (x: number, z: number) => number, seed: number, ox: number, oz: number, style: Style,
 ) {
+  if (style.vienna) return addViennaBlock(bld, b, heightAt, seed, ox, oz);
   if (style.city) return addCityBlock(bld, b, heightAt, seed, ox, oz);
   const med = style.med;
   const ring = simplify(bld.ring);
@@ -399,7 +407,7 @@ function addBuilding(
   }
 }
 
-function pointInRing(ring: THREE.Vector2[], x: number, y: number): boolean {
+export function pointInRing(ring: THREE.Vector2[], x: number, y: number): boolean {
   let inside = false;
   for (let i = 0, j = ring.length - 1; i < ring.length; j = i++) {
     const a = ring[i], c = ring[j];
@@ -521,7 +529,7 @@ function addCityBlock(bld: Building, b: Builder, heightAt: (x: number, z: number
  * under the parapet, with a thin fillet below it. The outline is offset with mitred corners; every face gets its
  * own inside point so the lighting normals come out right (the soffit must face down, the top up).
  */
-function cornice(b: Builder, ring: THREE.Vector2[], sgn: number, wallTop: number, wall: THREE.Color) {
+export function cornice(b: Builder, ring: THREE.Vector2[], sgn: number, wallTop: number, wall: THREE.Color) {
   const n = ring.length;
   const out = (i: number) => {
     const e = new THREE.Vector2().subVectors(ring[(i + 1) % n], ring[i]).normalize();
@@ -885,6 +893,143 @@ function facadeMaterial(style: Style) {
       glassCol *= 1.0 - 0.35 * step(hy, 6.0) * tallT;
       diffuseColor.rgb = mix(diffuseColor.rgb, glassCol, wallF);
     }
+  } else if (sid == 11 || sid == 12) {
+    // Vienna Ringstrasse. 11: Gründerzeit plaster block, 12: monument stone (wider bays, pilasters, bigger pediments).
+    // Storeys from the ground up: rusticated ground floor, mezzanine, piano nobile (tall windows under pediments),
+    // plain upper floors, and the cornice under the eaves (geometry). Measured along the wall like Manhattan.
+    float mono = sid == 12 ? 1.0 : 0.0;
+    float uc = dot(wp.xz, vec2(-n.z, n.x)) / max(length(n.xz), 0.001);
+    float bid = fHash(vec2(vBaseY * 7.31 + diffuseColor.r * 91.0, vTopY * 3.17 + diffuseColor.g * 57.0));
+    float total = vTopY - vBaseY;
+    float h2 = fHash(vec2(bid, 2.0)), h3 = fHash(vec2(bid, 3.0)), h4 = fHash(vec2(bid, 4.0));
+    float h5 = fHash(vec2(bid, 5.0)), h6 = fHash(vec2(bid, 6.0)), h7 = fHash(vec2(bid, 7.0));
+    vec3 v = normalize(wp - cameraPosition);
+    vec3 r = reflect(v, n);
+    vec3 sky = atmoSky(normalize(vec3(r.x, abs(r.y) * 0.6 + 0.05, r.z)));
+    float fres = pow(max(1.0 - abs(dot(-v, n)), 0.0), 3.0);
+    float fwU = fwidth(uc), fwY = fwidth(hy);
+    float near = 1.0 - smoothstep(25.0, 90.0, camD);
+    float bay = mix(2.55, 3.3, h2) * (1.0 + 0.55 * mono);
+    float gfh = mix(3.9, 4.8, h3) * (1.0 + 0.12 * mono);
+    float mzh = mix(2.8, 3.4, h4);
+    float pnh = mix(4.4, 5.2, h5) * (1.0 + 0.1 * mono);
+    float yG = min(gfh, total * 0.45);
+    float yM = yG + mzh * step(17.0, total);
+    float yP = yM + pnh * step(10.5, total);
+    float rem = max(total - 1.7 - yP, 0.0);
+    float nUp = max(floor(rem / 3.7 + 0.5), 0.0);
+    float fhu = rem / max(nUp, 1.0);
+    float zone = 0.0, y0 = 0.0, fh = max(yG, 0.5);
+    if (hy >= yG && hy < yM) { zone = 1.0; y0 = yG; fh = mzh; }
+    else if (hy >= yM && hy < yP) { zone = 2.0; y0 = yM; fh = pnh; }
+    else if (hy >= yP && hy < total - 1.7) { zone = 3.0; y0 = yP; fh = fhu; }
+    else if (hy >= total - 1.7) { zone = 4.0; y0 = total - 1.7; fh = 1.7; }
+    float rawY = (hy - y0) / fh;
+    float fIdx = zone > 2.5 ? floor(rawY) : 0.0;
+    float fy = zone > 2.5 ? rawY - fIdx : clamp(rawY, 0.0, 1.0);
+    float bi = floor(uc / bay);
+    float fx = fract(uc / bay);
+    float cell = fHash(vec2(bi, fIdx + zone * 7.0 + bid * 31.0));
+    float fine = wallF * (1.0 - smoothstep(0.22, 0.6, max(fwU / bay, fwY / fh)));
+    vec3 base = diffuseColor.rgb;
+    float calm = 1.0 - smoothstep(0.2, 0.6, max(fwU / 3.0, fwY / 3.0));
+    base *= 1.0 + (0.9 + 0.2 * fHash(floor(vec2(uc / 3.0, hy / 3.0)) + bid) - 1.0) * calm;
+    // soot under the cornice and splash from the street
+    base *= 1.0 - 0.12 * smoothstep(8.0, 0.0, total - hy) - 0.1 * smoothstep(2.5, 0.0, hy);
+    vec3 stone = mix(base, vec3(0.9, 0.88, 0.82), mix(0.5, 0.3, mono));
+    vec3 pane = mix(vec3(0.035, 0.04, 0.05), sky * 0.85, 0.12 + 0.6 * fres);
+    vec3 col = base;
+    if (zone < 0.5) {
+      // rusticated ground floor: joints between courses, an arch or a rectangle in every bay, a portal now and then
+      float groove = (1.0 - smoothstep(0.0, 0.1, fract(hy / 0.62))) * (1.0 - smoothstep(0.12, 0.4, fwY / 0.62));
+      col = mix(base, base * 0.9, 0.55) * (1.0 - 0.28 * groove);
+      float portal = step(mod(bi, 3.0 + floor(h6 * 3.0)), 0.5) * step(0.2, h7);
+      float ow = mix(0.27, 0.36, h3) * (1.0 - 0.1 * portal);
+      float arched = max(step(0.5, h4), mono);
+      float topW = mix(0.76, 0.88, h6);
+      float rad = ow * bay / fh;
+      float cy = topW - rad;
+      float dx = (fx - 0.5) * bay, dyy = (fy - cy) * fh;
+      float inArch = step(length(vec2(dx, dyy)), ow * bay) * step(cy, fy);
+      float inRect = step(abs(fx - 0.5), ow) * step(0.1, fy) * step(fy, cy);
+      float shop = mix(step(abs(fx - 0.5), ow) * step(0.1, fy) * step(fy, topW), max(inRect, inArch), arched);
+      float door = portal * step(abs(fx - 0.5), 0.3) * step(fy, 0.84);
+      float rim = step(abs(fx - 0.5), ow + 0.05) * step(0.07, fy) * step(fy, topW + 0.05) - shop;
+      float doorRim = portal * step(abs(fx - 0.5), 0.38) * step(fy, 0.92) - door;
+      vec3 shopCol = mix(mix(vec3(0.03, 0.035, 0.04), sky * 0.55, 0.1 + 0.5 * fres), vec3(0.8, 0.62, 0.36) * 0.5, step(0.55, cell) * 0.5 * (1.0 - fres));
+      col = mix(col, stone, clamp(max(rim, doorRim), 0.0, 1.0) * fine);
+      col = mix(col, shopCol * (0.8 + 0.2 * smoothstep(0.1, 0.9, fy)), shop * (1.0 - portal) * fine);
+      // shop fronts: a solid bulkhead under the glass, a transom and a centre mullion
+      col = mix(col, stone * 0.7, shop * (1.0 - portal) * step(fy, 0.26) * fine);
+      col = mix(col, vec3(0.8, 0.78, 0.72), shop * (1.0 - portal) * max(step(abs(fx - 0.5), 0.012), step(abs(fy - 0.7), 0.012)) * fine * near);
+      col = mix(col, vec3(0.05, 0.04, 0.035), door * fine);
+      col = mix(col, stone, step(0.93, fy) * fine);
+    } else if (zone < 3.5) {
+      // window row of this floor: opening bounds (fx half width, fy range), sill, and the pediment over it
+      float ww = 0.2, wy0 = 0.18, wy1 = 0.74, pedH = 0.0, ped = 0.0;
+      if (zone < 1.5) { ww = 0.22; wy0 = 0.3; wy1 = 0.74; }
+      else if (zone < 2.5) {
+        ww = 0.2 + 0.04 * h4 + 0.03 * mono; wy0 = 0.1; wy1 = 0.72; pedH = 0.2;
+        ped = mono > 0.5 ? (mod(bi, 2.0) < 0.5 ? 1.0 : 2.0) : (step(0.4, h5) * (mod(bi, 2.0) < 0.5 ? 1.0 : 2.0));
+      } else {
+        ww = 0.19 + 0.04 * h4; wy1 = 0.7; pedH = 0.17;
+        ped = (fIdx < 0.5 && h6 > 0.45 && mod(bi, 2.0) > 0.5) ? 2.0 : 0.0;
+      }
+      float frameW = 0.04 + 0.01 * mono;
+      float inX = step(abs(fx - 0.5), ww);
+      float win = inX * step(wy0, fy) * step(fy, wy1);
+      float frame = step(abs(fx - 0.5), ww + frameW) * step(wy0 - 0.05, fy) * step(fy, wy1 + 0.045) - win;
+      float sillB = step(abs(fx - 0.5), ww + frameW + 0.035) * step(wy0 - 0.095, fy) * step(fy, wy0 - 0.045);
+      float pw = ww + frameW + 0.05;
+      float pyy = (fy - wy1 - 0.045) / max(pedH, 0.05);
+      float pt = 1.0 - pyy;
+      float triP = step(abs(fx - 0.5), pw * pt) * step(0.0, pyy) * step(pyy, 1.0);
+      float segE = length(vec2((fx - 0.5) / pw, pyy));
+      float segP = step(segE, 1.0) * step(0.0, pyy);
+      float pedm = ped > 1.5 ? segP : (ped > 0.5 ? triP : 0.0);
+      float pedIn = ped > 1.5 ? step(segE, 0.62) * step(0.12, pyy) : (ped > 0.5 ? step(abs(fx - 0.5), pw * 0.6 * (pt - 0.12)) * step(0.12, pyy) : 0.0);
+      float rx = (fx - (0.5 - ww)) / (2.0 * ww);
+      float ry = (wy1 - fy) / (wy1 - wy0);
+      float reveal = 1.0 - 0.5 * smoothstep(0.22, 0.0, ry) - 0.35 * smoothstep(0.16, 0.0, rx);
+      float sash = win * max(step(abs(fx - 0.5), 0.012), step(abs(fy - mix(wy0, wy1, 0.64)), 0.011));
+      // curtains and half-drawn blinds in some windows, a lit one now and then
+      float blind = step(0.55, cell) * step(0.78 - 0.5 * fract(cell * 7.3), (fy - wy0) / (wy1 - wy0));
+      vec3 pn = mix(pane, vec3(0.66, 0.62, 0.54), blind * 0.8);
+      pn = mix(pn, vec3(0.9, 0.72, 0.42) * 0.5, step(0.94, cell) * (1.0 - blind));
+      float belt = step(fy, 0.04) * step(1.5, zone);
+      float pil = mono * (step(fx, 0.06) + step(0.94, fx)) * step(0.5, zone);
+      col = base;
+      col = mix(col, stone, clamp(frame + sillB + pedm + belt + pil, 0.0, 1.0) * fine);
+      col = mix(col, base * 0.84, pedIn * fine * near);
+      col = mix(col, pn * reveal, win * fine);
+      col = mix(col, vec3(0.9, 0.88, 0.82), sash * fine * near);
+    }
+    // the mean of wall and windows where the pattern is too fine to draw
+    col = mix(col, base * mix(0.84, 0.76, step(zone, 0.5)) + sky * 0.03, (1.0 - fine) * wallF * 0.9);
+    diffuseColor.rgb = mix(diffuseColor.rgb, col, wallF);
+  } else if (sid == 13) {
+    // slate, clay and verdigris roofs: courses of tiles in rows along the eaves, and dormers on the steep lower
+    // slope of a mansard. The roof's own slope gives the metres along it, measured from the eaves.
+    float sl = max(length(n.xz), 0.05);
+    float run = dot(wp.xz, vec2(-n.z, n.x)) / sl;
+    float up = (wp.y - vTopY) / sl;
+    float fineR = 1.0 - smoothstep(0.25, 0.7, max(fwidth(run), fwidth(up)) / 0.3);
+    float course = fract(up / 0.3);
+    float stag = fract(run / 0.26 + floor(up / 0.3) * 0.5);
+    float tl = 0.8 + 0.2 * smoothstep(0.0, 0.14, course) * smoothstep(0.0, 0.1, stag) * smoothstep(1.0, 0.9, stag);
+    diffuseColor.rgb *= mix(1.0, tl * (0.9 + 0.2 * fHash(vec2(floor(run / 0.26), floor(up / 0.3)))), fineR * detail);
+    float steep = 1.0 - smoothstep(0.5, 0.78, n.y);
+    float dT = 3.0 + 1.0 * fHash(vec2(vBaseY, vTopY));
+    float da = fract(run / dT);
+    float inD = step(abs(da - 0.5), 0.14) * step(0.85, up) * step(up, 2.0);
+    float dFrame = step(abs(da - 0.5), 0.18) * step(0.78, up) * step(up, 2.08) - inD;
+    float dCap = step(abs(da - 0.5), 0.19 * (1.0 - (up - 2.08) / 0.55)) * step(2.08, up) * step(up, 2.63);
+    float dk = steep * fineR * detail;
+    vec3 dv = normalize(wp - cameraPosition);
+    vec3 dr = reflect(dv, n);
+    vec3 dglass = mix(vec3(0.04, 0.045, 0.055), atmoSky(normalize(vec3(dr.x, abs(dr.y) * 0.6 + 0.05, dr.z))) * 0.8, 0.2);
+    diffuseColor.rgb = mix(diffuseColor.rgb, vec3(0.62, 0.6, 0.56), clamp(dFrame + dCap, 0.0, 1.0) * dk);
+    diffuseColor.rgb = mix(diffuseColor.rgb, dglass, inD * dk);
   } else if (sid == 4) {
     // geraniums: red blossoms over green leaves
     float b = fHash(floor(vec2(u * 9.0, wp.y * 9.0)));

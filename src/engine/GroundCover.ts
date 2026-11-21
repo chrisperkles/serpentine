@@ -322,7 +322,7 @@ export class GroundCover extends THREE.Group {
       const rx = Math.cos(h), rz = Math.sin(h);
       for (const side of [-1, 1]) {
         // a mown park lawn is turf: only a few longer tufts along the edge and around the trees
-        const tries = Math.round(120 * density * (B.lawn ? 0.1 : 1));
+        const tries = Math.round(120 * density * (B.lawn || B.streets ? 0.1 : 1));
         for (let k = 0; k < tries; k++) {
           const u = r();
           // denser verge right next to the asphalt, patchier meadow further out
@@ -353,6 +353,8 @@ export class GroundCover extends THREE.Group {
             }
             if (r() < 0.85) continue;
           }
+          // city street: pavement and cobbles; grass only on the lawns of parks (and the odd verge strip)
+          if (B.streets && (cover !== 1 || r() < 0.4)) continue;
           // built-up: pavements and lawns rather than long grass
           if (cover === 2 && (d > halfWidth + 2.2 ? r() < 0.75 : r() < 0.45)) continue;
           const y = groundHeight(x, z);

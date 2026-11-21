@@ -12,6 +12,7 @@ import type { Biome } from './biome.ts';
 import { accessoryMaterial, dogGeometry, leashGeometry, pedicabGeometry, Person, PersonKit, strollerGeometry } from './People.ts';
 import { parkBenches, type BenchSpot } from './Props.ts';
 import { Rider } from './Rider.ts';
+import { tramAt, tramGeometry, tramLines, tramMaterial, type TramLine } from './Tram.ts';
 import { WorldGroup } from './dispose.ts';
 
 const CANOPIES = ['#f5a11a', '#d7263d', '#1b98e0', '#2bb673', '#f4d35e', '#7b2cbf', '#ff6b35', '#e0e0e0'];
@@ -166,6 +167,12 @@ export class Life extends WorldGroup {
   private nextDescender = 6;
   private nextClimber = 2;
   private carFree = false;
+  /** Vienna: people on the pavements, cyclists, cars stay (biome.streetLife). */
+  private streetLife = false;
+  private standSpots: { x: number; z: number; s: number; h: number }[] = [];
+  /** Tram track pieces with the route distance every 15 m along them, and the trams running on them. */
+  private tramTracks: { line: TramLine; ss: number[] }[] = [];
+  private trams: { obj: THREE.Mesh; track: number; s: number; speed: number; on: boolean }[] = [];
   private halfWidth = 3.1;
   private joggers: Jogger[] = [];
   private benches: BenchSpot[] = [];
@@ -188,6 +195,7 @@ export class Life extends WorldGroup {
     this.route = route;
     this.groundAt = groundAt;
     this.carFree = biome?.carFree === true;
+    this.streetLife = biome?.streetLife === true;
     this.halfWidth = halfWidth;
     const r = rng(7);
     // --- paragliders over the take-off sites
@@ -224,10 +232,10 @@ export class Life extends WorldGroup {
       await this.buildPark(route, index, osm, r);
       return;
     }
-    // --- cattle: herds on meadows near the road
+    // --- cattle: herds on meadows near the road (not in a city: its lawns are parks)
     const cow = await loadModel('cow.glb');
     let herds = 0;
-    for (let tries = 0; tries < 400 && herds < 6; tries++) {
+    for (let tries = 0; tries < 400 && herds < 6 && !biome?.streets; tries++) {
       const i = Math.floor(r() * route.n);
       const h = route.heading[i];
       const side = r() < 0.5 ? -1 : 1;
@@ -328,6 +336,171 @@ export class Life extends WorldGroup {
     for (const c of this.cars) {
       c.visible = false;
       this.add(c);
+    }
+    if (this.streetLife) {
+      this.index = index;
+      await this.buildStreet(route, index, osm, r);
+    }
+  }
+
+  /**
+   * A city street (Vienna Ring): people walking the pavements mapped as footways, small groups standing about,
+   * and cyclists in the carriageway; cars stay. Everyone keeps clear of the asphalt.
+   */
+  private async buildStreet(route: Route, index: RouteIndex, osm: OsmWorld, r: () => number) {
+    const kit = await PersonKit.load();
+    const person = (scale = 0.9 + r() * 0.18) => kit.rigged(Math.floor(r() * kit.count), scale);
+    const clear = this.halfWidth + 2.2;
+    // pavements: footways near the route whose every node is off the carriageway, long enough not to pace to and fro
+    const lines: { pts: Float32Array; len: number }[] = [];
+    for (const l of osm.roads) {
+      if (!['footway', 'pedestrian', 'path'].includes(l.kind) || l.pts.length < 6) continue;
+      let len = 0, ok = true;
+      for (let i = 0; i < l.pts.length; i += 2) {
+        if (i) len += Math.hypot(l.pts[i] - l.pts[i - 2], l.pts[i + 1] - l.pts[i - 1]);
+        if (index.nearest(l.pts[i], l.pts[i + 1], clear).index >= 0) { ok = false; break; }
+      }
+      if (!ok || len < 40) continue;
+      const m = Math.floor(l.pts.length / 4) * 2;
+      if (index.nearest(l.pts[m], l.pts[m + 1], 110).index < 0) continue;
+      lines.push({ pts: l.pts, len });
+    }
+    for (let i = 0; i < 90 && lines.length; i++) {
+      const l = lines[Math.floor(r() * lines.length)];
+      const run = r() < 0.1;
+      const p = person();
+      this.add(p);
+      this.walkers.push({
+        obj: p, rig: p, run, pts: l.pts, seg: Math.floor(r() * (l.pts.length / 2 - 1)), t: r(), dir: r() < 0.5 ? 1 : -1,
+        speed: run ? 2.4 + r() * 0.8 : 1.0 + r() * 0.5, phase: r() * 10,
+      });
+    }
+    // places to stand: points along those pavements, found once and handed out ahead of the rider
+    for (const l of lines) {
+      for (let i = 0; i + 3 < l.pts.length; i += 2) {
+        const x = (l.pts[i] + l.pts[i + 2]) / 2, z = (l.pts[i + 1] + l.pts[i + 3]) / 2;
+        const near = index.nearest(x, z, 60);
+        if (near.index < 0 || near.dist < clear + 0.8) continue;
+        this.standSpots.push({ x, z, s: near.index * route.step, h: route.heading[near.index] });
+      }
+    }
+    for (let i = 0; i < 22; i++) {
+      const g = new THREE.Group();
+      const n = 1 + Math.floor(r() * 3.2);
+      const rad = 0.55 + r() * 0.35;
+      const a0 = r() * Math.PI * 2;
+      for (let k = 0; k < n; k++) {
+        const kid = n > 1 && k === n - 1 && r() < 0.2;
+        const m = kit.standing(Math.floor(r() * kit.count), kid ? 0.62 : 0.9 + r() * 0.18);
+        const a = a0 + (k / n) * Math.PI * 2;
+        m.position.set(n === 1 ? 0 : Math.cos(a) * rad, 0, n === 1 ? 0 : Math.sin(a) * rad);
+        m.rotation.y = n === 1 ? 0 : Math.atan2(-Math.cos(a), -Math.sin(a)) + (r() - 0.5) * 0.7;
+        g.add(m);
+      }
+      g.visible = false;
+      this.add(g);
+      this.clusters.push({ obj: g, placed: false, s: 0 });
+    }
+    for (let i = 0; i < 6; i++) {
+      const c = new Rider({ kit: KITS[i], accent: '#111214', bike: i % 2 ? '#e9e9e4' : '#1a1c1f' });
+      c.visible = false;
+      this.add(c);
+      this.cyclistPool.push(c);
+    }
+    // trams on the track Props laid (the same pieces: cut where they would cross the carriageway)
+    const tmp = { x: 0, z: 0, dx: 0, dz: 0 };
+    for (const line of tramLines(osm, index, this.halfWidth + 0.4)) {
+      if (line.len < 80) continue;
+      const ss: number[] = [];
+      for (let d = 0; d <= line.len; d += 15) {
+        tramAt(line, Math.min(d, line.len - 0.01), tmp);
+        const nr = index.nearest(tmp.x, tmp.z, 260);
+        ss.push(nr.index < 0 ? -1 : nr.index * route.step);
+      }
+      this.tramTracks.push({ line, ss });
+    }
+    if (this.tramTracks.length) {
+      const geo = tramGeometry(), mat = tramMaterial();
+      for (let i = 0; i < 2; i++) {
+        const m = new THREE.Mesh(geo, mat);
+        m.castShadow = true;
+        m.visible = false;
+        this.add(m);
+        this.trams.push({ obj: m, track: 0, s: 0, speed: 6 + r() * 3, on: false });
+      }
+    }
+  }
+
+  /** Trams run along their track at the speed of a city tram and are set down again ahead of the rider when they leave the picture. */
+  private tram(dt: number, route: Route, riderS: number, riderDir: 1 | -1) {
+    const L = route.length;
+    const relOf = (s: number) => {
+      let rel = (s - riderS) * riderDir;
+      if (route.loop) rel = ((((rel + L / 2) % L) + L) % L) - L / 2;
+      return rel;
+    };
+    const tmp = { x: 0, z: 0, dx: 0, dz: 0 };
+    for (const t of this.trams) {
+      if (t.on) {
+        t.s += t.speed * dt;
+        const tr = this.tramTracks[t.track];
+        const sr = tr.ss[Math.min(tr.ss.length - 1, Math.floor(t.s / 15))];
+        const rel = sr < 0 ? 9999 : relOf(sr);
+        if (t.s >= tr.line.len - 14 || rel < -150 || rel > 650) t.on = false;
+      }
+      if (!t.on) {
+        t.obj.visible = false;
+        for (let tries = 0; tries < 20; tries++) {
+          const ti = Math.floor(this.rand() * this.tramTracks.length);
+          const tr = this.tramTracks[ti];
+          const k = Math.floor(this.rand() * tr.ss.length);
+          if (tr.ss[k] < 0 || k * 15 > tr.line.len - 60 || k * 15 < 14) continue;
+          const rel = relOf(tr.ss[k]);
+          if (rel < 70 || rel > 420) continue;
+          t.track = ti;
+          t.s = k * 15;
+          t.on = true;
+          break;
+        }
+        if (!t.on) continue;
+      }
+      const line = this.tramTracks[t.track].line;
+      tramAt(line, t.s, tmp);
+      const y = this.groundAt(tmp.x, tmp.z);
+      if (!Number.isFinite(y)) { t.obj.visible = false; continue; }
+      t.obj.position.set(tmp.x, y + 0.1, tmp.z);
+      t.obj.rotation.y = Math.atan2(-tmp.dx, -tmp.dz);
+      t.obj.visible = true;
+    }
+  }
+
+  /** Groups standing on the pavements, set down ahead of the rider as the old ones fall behind. */
+  private gatherStreet(route: Route, riderS: number, riderDir: 1 | -1) {
+    if (!this.standSpots.length) return;
+    const L = route.length;
+    const relOf = (s: number) => {
+      let rel = (s - riderS) * riderDir;
+      if (route.loop) rel = ((((rel + L / 2) % L) + L) % L) - L / 2;
+      return rel;
+    };
+    for (const c of this.clusters) {
+      if (c.placed && relOf(c.s) > -80) continue;
+      c.placed = false;
+      c.obj.visible = false;
+      for (let tries = 0; tries < 24; tries++) {
+        const sp = this.standSpots[Math.floor(this.rand() * this.standSpots.length)];
+        const rel = relOf(sp.s);
+        if (rel < (c.s === 0 ? 15 : 60) || rel > (c.s === 0 ? 520 : 460)) continue;
+        if (this.clusters.some((o) => o !== c && o.placed && Math.hypot(o.obj.position.x - sp.x, o.obj.position.z - sp.z) < 18)) continue;
+        const y = this.groundAt(sp.x, sp.z);
+        if (!Number.isFinite(y)) continue;
+        c.obj.position.set(sp.x, y, sp.z);
+        c.obj.rotation.y = this.rand() * Math.PI * 2;
+        c.obj.visible = true;
+        c.placed = true;
+        c.s = sp.s;
+        break;
+      }
     }
   }
 
@@ -755,12 +928,16 @@ export class Life extends WorldGroup {
       this.gather(route, riderS, riderDir);
       this.pedi(dt, route, riderS, riderDir);
     }
+    if (this.streetLife) {
+      this.gatherStreet(route, riderS, riderDir);
+      if (this.trams.length) this.tram(dt, route, riderS, riderDir);
+    }
     this.ride(dt, route, riderS, riderDir, riderSpeed);
   }
 
   private ride(dt: number, route: Route, riderS: number, riderDir: 1 | -1, riderSpeed = 0) {
     if (!this.cyclistPool.length) return;
-    if (this.carFree) return this.parkRide(dt, route, riderS, riderDir, riderSpeed);
+    if (this.carFree || this.streetLife) return this.parkRide(dt, route, riderS, riderDir, riderSpeed);
     const free = this.cyclistPool.filter((c) => !c.visible);
     const inRoute = (s: number) => route.loop || (s > 0 && s < route.length);
     this.nextDescender -= dt;

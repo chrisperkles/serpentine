@@ -388,7 +388,7 @@ export class Vegetation extends WorldGroup {
         // park elms, planes and oaks spread nearly as wide as they are tall and meet over the drive
         const lo = o.biome?.lawn ? 0.66 : 0.5;
         // park models are built narrower than their instance width so far impostors keep the whole crown
-        const w = Math.min(Math.max(cr / 0.3, h * lo), h * 1.25) * (0.8 + hash2(i, 41) * 0.4) * (park ? 1.3 : 1);
+        const w = Math.min(Math.max(cr / 0.3, h * lo), h * 1.25) * (0.8 + hash2(i, 41) * 0.4) * (park ? (o.biome?.avenueTrees ? 1.0 : 1.3) : 1);
         const kind: Kind = sp === 'elm' ? 'spruceO' : sp === 'plane' ? 'spruceF' : sp ? (r1 < 0.5 ? 'beechF' : 'beechO') : edge ? 'beechO' : 'beechF';
         add(kind, x, y - 0.3, z, w, h, r2 * 6.283, tint);
       }
