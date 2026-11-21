@@ -76,6 +76,8 @@ const QUALITY = {
 };
 
 const CORRIDOR = 420;
+/** OSM highway kinds that are carriageways (asphalt), as opposed to paths and footways. */
+const ASPHALT_ROADS = new Set(['motorway', 'trunk', 'primary', 'secondary', 'tertiary', 'unclassified', 'residential', 'living_street', 'service']);
 
 /** EXT_clip_control (Chrome 120+) lets three.js run a reversed depth buffer. */
 function reversedDepthSupported() {
@@ -353,6 +355,7 @@ export class Engine {
       anisotropy: this.renderer.capabilities.getMaxAnisotropy(),
       detail: this.preset.detail,
       cutWidth: biome.id === 'mediterranean' ? 3.2 : 14,
+      roadSink: biome.lawn || biome.streets || biome.suburb ? 1.1 : 0.45,
     });
     const road = new Road(route, halfWidth, biome);
     const rider = new Rider(style);
@@ -604,31 +607,51 @@ export class Engine {
     ctex.minFilter = THREE.LinearFilter;
     ctex.generateMipmaps = false;
     setWaterMask(tex, x0, z0, cw * res, ch * res, ctex);
-    // beach sand and sandstone, where the biome has them
-    if (this.biome.sand && osm.shore) {
+    // beach sand and sandstone where the biome has them (R, G); city biomes add the OSM carriageways (B) so the
+    // shader can tell asphalt from pavement and lawn at a few metres' accuracy
+    const city = !!(this.biome.lawn || this.biome.streets || this.biome.suburb);
+    if ((this.biome.sand && osm.shore) || city) {
       const sc = document.createElement('canvas');
       sc.width = cw;
       sc.height = ch;
-      const sx = sc.getContext('2d')!;
+      const sx = sc.getContext('2d', { willReadFrequently: true })!;
       sx.fillStyle = '#000';
       sx.fillRect(0, 0, cw, ch);
       sx.globalCompositeOperation = 'lighter';
-      sx.fillStyle = '#ff0000';
-      sx.fill(pathOf(osm.shore.sand), 'evenodd');
-      sx.fillStyle = '#00ff00';
-      sx.fill(pathOf(osm.shore.rock), 'evenodd');
-      // cliff faces are lines: a strip a few metres wide along the top edge reads as rock
-      sx.strokeStyle = '#00ff00';
-      sx.lineJoin = sx.lineCap = 'round';
-      sx.lineWidth = 10 / res;
-      for (const l of osm.shore.cliffs) {
-        sx.beginPath();
-        for (let i = 0; i < l.length; i += 2) {
-          const px = (l[i] - x0) / res, pz = (l[i + 1] - z0) / res;
-          if (i === 0) sx.moveTo(px, pz);
-          else sx.lineTo(px, pz);
+      if (this.biome.sand && osm.shore) {
+        sx.fillStyle = '#ff0000';
+        sx.fill(pathOf(osm.shore.sand), 'evenodd');
+        sx.fillStyle = '#00ff00';
+        sx.fill(pathOf(osm.shore.rock), 'evenodd');
+        // cliff faces are lines: a strip a few metres wide along the top edge reads as rock
+        sx.strokeStyle = '#00ff00';
+        sx.lineJoin = sx.lineCap = 'round';
+        sx.lineWidth = 10 / res;
+        for (const l of osm.shore.cliffs) {
+          sx.beginPath();
+          for (let i = 0; i < l.length; i += 2) {
+            const px = (l[i] - x0) / res, pz = (l[i + 1] - z0) / res;
+            if (i === 0) sx.moveTo(px, pz);
+            else sx.lineTo(px, pz);
+          }
+          sx.stroke();
         }
-        sx.stroke();
+      }
+      if (city) {
+        sx.strokeStyle = '#0000ff';
+        sx.lineJoin = 'round';
+        sx.lineCap = 'butt';
+        for (const road of osm.roads) {
+          if (!ASPHALT_ROADS.has(road.kind)) continue;
+          sx.lineWidth = Math.max(road.width, 3) / res;
+          sx.beginPath();
+          for (let i = 0; i < road.pts.length; i += 2) {
+            const px = (road.pts[i] - x0) / res, pz = (road.pts[i + 1] - z0) / res;
+            if (i === 0) sx.moveTo(px, pz);
+            else sx.lineTo(px, pz);
+          }
+          sx.stroke();
+        }
       }
       const stex = new THREE.CanvasTexture(sc);
       stex.flipY = false;

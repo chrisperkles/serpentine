@@ -124,6 +124,12 @@ export interface TerrainOptions {
   /** Width (m) over which the hillside above the road falls to road level: 14 = grassy
    * embankment (Alps), ~3 = near-vertical rock cut (Mallorca). */
   cutWidth?: number;
+  /**
+   * How far (m) the drawn mesh lies under the asphalt. The coarse mesh interpolates between vertices that follow the
+   * road's profile, so at a crest it rises through a road that only floats 0.45 m above it (a pale terrain band across
+   * the lanes in Sydney); city routes sink it further. groundHeight keeps 0.45 so placed objects do not move.
+   */
+  roadSink?: number;
 }
 
 export class Terrain extends THREE.Group {
@@ -141,7 +147,7 @@ export class Terrain extends THREE.Group {
 
   constructor(opts: TerrainOptions) {
     super();
-    this.opts = { detail: 2.3, maxConcurrent: 14, cutWidth: 14, ...opts };
+    this.opts = { detail: 2.3, maxConcurrent: 14, cutWidth: 14, roadSink: 0.45, ...opts };
     this.underpasses = opts.route.underpasses.map((u) => {
       const p = pointAt(opts.route, u.s);
       return { x: p.x, z: p.z, fx: Math.sin(p.heading), fz: -Math.cos(p.heading), floor: p.ele - 0.45 };
@@ -320,7 +326,7 @@ export class Terrain extends THREE.Group {
         const mx = mx0 + (i - 1) * stepM;
         let h = smoothDem ? heightAtMercSmooth(mx, my, dz) : heightAtMerc(mx, my, dz);
         if (h !== h) h = 0;
-        if (flatten) h = this.flatten((mx - frame.mx0) * frame.k, -(my - frame.my0) * frame.k, h);
+        if (flatten) h = this.flatten((mx - frame.mx0) * frame.k, -(my - frame.my0) * frame.k, h, this.opts.roadSink);
         heights[j * G + i] = h;
         if (i > 0 && j > 0 && i < G - 1 && j < G - 1) {
           minH = Math.min(minH, h);
@@ -395,7 +401,7 @@ export class Terrain extends THREE.Group {
   }
 
   /** Blend raw terrain towards the road: embankments below, cuts above; untouched over tunnels. */
-  private flatten(x: number, z: number, h: number): number {
+  private flatten(x: number, z: number, h: number, sink = 0.45): number {
     const { routeIndex, roadHalfWidth, route } = this.opts;
     // under a bridge the ground is the lower road's floor, out to the bridge's ends; the model hides it
     for (const b of this.underpasses) {
@@ -408,6 +414,7 @@ export class Terrain extends THREE.Group {
     if (!near.turn) for (const [a, b] of route.tunnels) if (s > a + 4 && s < b - 4) return h;
     const road = near.ele - 0.45;
     const cut = h > road + 0.5;
+    const under = near.ele - sink;
     if (cut && this.opts.cutWidth < 8) {
       // a real road cut: a near-vertical rock face of a few metres right at the verge, then a
       // ~50° bank up to the natural slope (the min() carves it into the hillside)
@@ -422,7 +429,7 @@ export class Terrain extends THREE.Group {
     if (near.dist > roadHalfWidth + 17) return h;
     // under the asphalt the ground sits 0.45 m low (no z-fighting); beside it the verge comes
     // back up to just below road level, so there is no ditch along the edge
-    const verge = road + 0.39 * smooth01((near.dist - roadHalfWidth + 0.2) / 1.0);
+    const verge = under + (sink - 0.06) * smooth01((near.dist - roadHalfWidth + 0.2) / 1.0);
     // fills ease out into the slope over 14 m
     const width = cut ? Math.max(this.opts.cutWidth, (h - road) * 0.6) : 14;
     const w = 1 - smooth01((near.dist - roadHalfWidth - (cut ? 0.6 : 2.5)) / width);

@@ -5,10 +5,29 @@ import type { Route } from '../geo/route.ts';
 import { patchMaterial } from './atmosphere.ts';
 import { ALPINE, type Biome } from './biome.ts';
 import { markShared, WorldGroup } from './dispose.ts';
+import { PAVING_GLSL } from './groundTextures.ts';
 
 const SHOULDER = 0.55;
 
 const TILE = 2.6; // metres per asphalt texture repeat
+
+/** Pavement width beside a Vienna carriageway (m): the ledge between the asphalt and the kerb that drops to the street. */
+export const STREET_LEDGE = 3.0;
+
+/**
+ * City cross-sections beside the asphalt, as (offset from the asphalt edge, height against the asphalt top) pairs.
+ * Park drives (Central Park) and suburban streets (Sydney) get a gutter and a raised kerb stone with a face down to the
+ * lawn; Vienna gets a flush granite edge row, a slab pavement and a kerb lip. Null: the open-road shoulder.
+ */
+function cityProfile(biome: Biome): { kind: number; pts: [number, number][] } | null {
+  if (biome.streets) {
+    return { kind: 2, pts: [[0, 0], [STREET_LEDGE - 0.28, 0], [STREET_LEDGE - 0.27, 0.035], [STREET_LEDGE, 0.035], [STREET_LEDGE + 0.02, -0.2]] };
+  }
+  if (biome.suburb || biome.lawn) {
+    return { kind: biome.suburb ? 3 : 1, pts: [[0, 0], [0.3, -0.005], [0.31, 0.07], [0.5, 0.07], [0.52, -0.2]] };
+  }
+  return null;
+}
 
 let asphalt: { color: THREE.Texture; normal: THREE.Texture; rough: THREE.Texture } | null = null;
 
@@ -51,6 +70,12 @@ function roadMaterial(halfWidth: number, biome: Biome, turn = false) {
     shader.uniforms.uLane = { value: biome.carFree ? halfWidth - 2.5 : 0 };
     // city streets carry no edge lines (they are for country roads)
     shader.uniforms.uStreet = { value: biome.streets ? 1 : 0 };
+    const prof = cityProfile(biome);
+    shader.uniforms.uKerb = { value: prof?.kind ?? 0 };
+    shader.uniforms.uOuter = { value: prof ? prof.pts[prof.pts.length - 1][0] : 0 };
+    // kerb stone and pavement tones: warm concrete in Sydney, grey granite in Vienna and Central Park
+    shader.uniforms.uKerbCol = { value: new THREE.Vector3(...(biome.suburb ? [0.42, 0.4, 0.36] : biome.streets ? [0.34, 0.33, 0.31] : [0.36, 0.35, 0.33])) };
+    shader.uniforms.uPaveCol = { value: new THREE.Vector3(0.32, 0.29, 0.245) };
     shader.vertexShader = shader.vertexShader
       .replace('#include <common>', '#include <common>\nattribute vec2 roadUv;\nvarying vec2 vRoad;')
       .replace('#include <begin_vertex>', '#include <begin_vertex>\nvRoad = roadUv;');
@@ -63,9 +88,14 @@ uniform vec2 uDash;
 uniform float uMed;
 uniform float uLane;
 uniform float uStreet;
+uniform float uKerb;
+uniform float uOuter;
+uniform vec3 uKerbCol;
+uniform vec3 uPaveCol;
 uniform sampler2D uAsphalt;
 varying vec2 vRoad;
 float gPaint;
+${PAVING_GLSL}
 float rh(vec2 p) { return fract(sin(dot(p, vec2(41.3, 289.1))) * 15731.7); }
 float rn(vec2 p) {
   vec2 i = floor(p), f = fract(p); f = f * f * (3.0 - 2.0 * f);
@@ -110,9 +140,50 @@ float rn(vec2 p) {
   // Mallorca: the asphalt crumbles into the red-brown dusty verge
   gravel = mix(gravel, vec3(0.42, 0.33, 0.25) * (0.8 + 0.3 * rn(p * 9.0)), uMed);
   col = mix(col, gravel, sh);
+  float aw = fwidth(along);
+  vec2 kp = vec2(a - uHalf, along);
+  float kpix = gPix(kp);
+  if (uKerb > 0.5) {
+    float d = a - uHalf;
+    vec3 conc = uKerbCol * (0.9 + 0.2 * rn(p * 3.0)) * (0.93 + 0.14 * rn(p * 14.0));
+    // dark seam where the asphalt meets the gutter or the edge row
+    float seam = 1.0 - smoothstep(0.0, 0.03, abs(d));
+    // kerb stones every 1.2 m: dark joints that fade with the pixel footprint
+    float dj = abs(fract(along / 1.2 + 0.5) - 0.5) * 1.2;
+    float jk = clamp((0.006 - dj) / max(aw, 1e-4) + 0.5, 0.0, 1.0) * (1.0 - smoothstep(0.01, 0.05, aw));
+    vec3 kc;
+    if (uKerb < 1.5 || uKerb > 2.5) {
+      // gutter pan, kerb top, kerb face (a few cm of height shading: the face is in its own shade)
+      float top = smoothstep(0.29, 0.32, d);
+      float face = smoothstep(0.49, 0.52, d);
+      vec3 gut = mix(conc * 0.82, asphalt * 1.4, 0.3);
+      kc = mix(gut, conc * 1.12, top);
+      kc *= 1.0 - jk * 0.5 * top;
+      kc = mix(kc, conc * 0.38, face);
+    } else {
+      // granite edge row, slab pavement (running bond, joints), kerb lip and its face
+      vec2 sid = vec2(0.0);
+      float js = gJoint(kp, vec2(0.6, 0.9), 0.014, kpix, sid);
+      float tone = mix(1.0, 0.9 + 0.2 * rh(sid), 1.0 - smoothstep(0.1, 0.45, kpix / 0.6));
+      vec3 slab = uPaveCol * tone * (0.93 + 0.14 * rn(p * 9.0)) * (0.95 + 0.1 * rn(p * 1.3));
+      slab = mix(slab, slab * 0.45, js);
+      float edgeRow = 1.0 - smoothstep(0.17, 0.19, d);
+      vec3 er = uKerbCol * 1.08 * (1.0 - jk * 0.5);
+      float lip = smoothstep(uOuter - 0.29, uOuter - 0.27, d);
+      float face = smoothstep(uOuter - 0.03, uOuter - 0.01, d);
+      kc = mix(slab, er, edgeRow);
+      kc = mix(kc, uKerbCol * 1.15 * (1.0 - jk * 0.4), lip);
+      kc = mix(kc, uKerbCol * 0.36, face);
+    }
+    kc *= 1.0 - 0.4 * seam;
+    col = mix(col, kc, smoothstep(-0.005, 0.02, d));
+    diffuseColor.rgb = col;
+    diffuseColor.a = 1.0 - smoothstep(uOuter - 0.005, uOuter + 0.005, d);
+  } else {
   diffuseColor.rgb = col;
   // a narrow strip of gravel then the verge (wide soft fades read as a grey smear)
   diffuseColor.a = 1.0 - smoothstep(uHalf + 0.04, uHalf + 0.22, a);
+  }
 }`,
       )
       .replace(
@@ -138,8 +209,11 @@ interface Strip {
 }
 
 export class Road extends WorldGroup {
+  private profile: [number, number][] | null;
+
   constructor(route: Route, halfWidth: number, biome: Biome = ALPINE) {
     super();
+    this.profile = cityProfile(biome)?.pts ?? null;
     const mat = roadMaterial(halfWidth, biome);
     // point-to-point routes run on one sample (4 m) under their turnarounds: a loop leaves the end
     // point at an angle, and the wedge between the square end of the asphalt and the loop showed the ground
@@ -162,8 +236,10 @@ export class Road extends WorldGroup {
     const r = extend ? extended(r0) : r0;
     if (extend) along0 -= r0.step;
     const n = r.n;
-    const cols = [-(halfWidth + SHOULDER), -halfWidth, 0, halfWidth, halfWidth + SHOULDER];
-    const drop = [-0.12, 0, 0, 0, -0.12];
+    // right-hand profile from the asphalt edge outwards, mirrored for the left; the open road's shoulder or a city kerb
+    const side: [number, number][] = this.profile ?? [[0, 0], [SHOULDER, -0.12]];
+    const cols = [...side.map(([o]) => -(halfWidth + o)).reverse(), 0, ...side.map(([o]) => halfWidth + o)];
+    const drop = [...side.map(([, h]) => h).reverse(), 0, ...side.map(([, h]) => h)];
     const pos = new Float32Array(n * cols.length * 3);
     const uv = new Float32Array(n * cols.length * 2);
     const nor = new Float32Array(n * cols.length * 3);

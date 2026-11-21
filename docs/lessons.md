@@ -355,3 +355,35 @@ symptom (what it looked like), cause, fix and where. Newest at the bottom of eac
   its HSL saturation at 0.14 changed nothing on screen: in linear light green was still twice the red, and under the
   noon sun that reads as teal. Fix: tagged copper-green roofs get the weathered tone outright (linear 0.15, 0.19, 0.17).
   Judge a colour fix by the re-captured frame, not by the number. Where: `ViennaBlock.ts`.
+
+- **The city ground was a photo: blurry, blotchy, smeared, with no kerb.** The aerial photo carried every pixel within
+  2 to 30 m of the saddle, so lawns were airbrushed green with speckle, Vienna's roadside a grey-green plane, Sydney's
+  slopes streaks of roofs and tarmac, and the asphalt edge fell off into the verge. Fix: a city branch in the terrain
+  shader (`uCity`, kinds park, street, suburb) that builds the surface from OSM masks and procedure up to ~200 m and
+  fades to the photo only beyond ~900 m: turf (a new fine-grain `lawn` texture at two scales, soft mottling, dry
+  patches), bare earth and leaf litter under the baked crowns, slab pavement with joints that fade with `fwidth`,
+  asphalt where the OSM carriageways (surface mask B) or Vienna's dark photo say so, a pale edge stone along a park's
+  border, beach sand with a wet band by height, sandstone beds with bedding lines. The lawn takes the photo's
+  brightness (clamped 0.9 to 1.12) so the hand-over shows no ring. The road gets a real cross-section in city biomes:
+  gutter and raised kerb stone (park drives, suburbs), or a flush granite edge row, 3 m of slab pavement and a kerb lip
+  that drops to the street (Vienna). Mapped footways become thin ribbons draped on the terrain (pale asphalt in
+  Central Park, gravel in Vienna's parks and slabs on its sidewalks, joined concrete in Sydney), because the 3 m land
+  mask cannot hold a 2 m path. Where: `terrainMaterial.ts`, `groundTextures.ts` (`lawn`, `PAVING_GLSL`), `Road.ts`
+  (`cityProfile`, `STREET_LEDGE`), `GroundCover.ts` (`pathMaterial`, `buildPaths`), `Engine.ts` (surface mask).
+- **A grass texture's bump made turf sparkle.** The old detail texture also drove the normal (`tBump`), and a
+  centimetre-scale height gradient is hundreds of times steeper than the pixel can resolve: the lawn "speckled" under
+  the sun. Fix: fine turf grain only moves colour; the bump on a lawn is a 1 m mottle of 2 cm.
+- **Mask edges at 3 m per texel need `fwidth` or they read as smears.** The land masks are bilinear at 3 m, so a
+  `smoothstep(0.3, 0.8)` edge is 1.5 m of fade. For hard borders (park lawn, carriageway, sand, sandstone) use
+  `smoothstep(0.5 - fw, 0.5 + fw)` with `fw = fwidth(mask) * 0.7 + 0.02`: crisp at any distance, 0.5 m of wobble.
+- **Value noise on the world axes tiles into squares.** Leaf litter under baked crowns showed as brick-like squares from
+  the drone. Turn the noise coordinates off the axes (a 37 degree rotation) and widen the crown edge with noise.
+- **Tufts in a lawn looked stamped.** One atlas card at one proportion, tinted a little, repeated: the eye finds the
+  copies at once. In lawn biomes the tufts are now 5 % of the old density, with independent width and height, a lean,
+  a mirror flip, and a tone from dark green to bleached straw. `GroundCover.ts` `add`.
+- **The "flat pale-grey band across the lanes" on Sydney at 2800 m is a gap between two building shadows, not ground.**
+  With the sun's shadow map off the band is gone and the road is one grey; at golden hour it is gone too. A tall building
+  to the south casts a long shadow over the lanes with a straight edge, and the sunlit gap between it and the next
+  shadow reads as a pale flat plane. Separately, the coarse terrain mesh did poke through the asphalt at that crest
+  (a ray hit terrain 3 to 5 m before the road), so city routes sink the drawn mesh 1.1 m under the road instead of
+  0.45 m (`Terrain.roadSink`; `groundHeight` keeps 0.45 so placed objects do not move).

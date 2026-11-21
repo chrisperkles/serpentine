@@ -5,7 +5,7 @@
 
 import * as THREE from 'three';
 import { patchMaterial } from './atmosphere.ts';
-import { groundTextures } from './groundTextures.ts';
+import { groundTextures, PAVING_GLSL } from './groundTextures.ts';
 import type { Biome } from './biome.ts';
 import { markShared } from './dispose.ts';
 
@@ -41,6 +41,17 @@ export const terrainUniforms = {
   uMeadowTint: { value: new THREE.Vector3(1, 1, 1) },
   /** City street (biome.streets): pavement beside the road, lawn only inside OSM parks (mask G). */
   uStreet: { value: 0 },
+  /**
+   * City ground (biome.lawn, streets, suburb): a procedural turf, pavement, litter, sand and sandstone within ~100 m
+   * of the camera, the photo only for colour and layout beyond. uCityKind: 0 park (Central Park), 1 street (Vienna),
+   * 2 suburb (Sydney). Colours are linear albedo.
+   */
+  uCity: { value: 0 },
+  uCityKind: { value: 0 },
+  uLawnTex: { value: blank as THREE.Texture },
+  uGrLawn: { value: new THREE.Vector3(0.16, 0.25, 0.07) },
+  uGrLeaf: { value: new THREE.Vector3(0.36, 0.17, 0.04) },
+  uGrPave: { value: new THREE.Vector3(0.26, 0.255, 0.24) },
 };
 
 /** Beach and sandstone mask over the same area as the water mask (Sydney). */
@@ -76,6 +87,18 @@ export function setTerrainBiome(b: Biome) {
   terrainUniforms.uSandOn.value = b.sand ? 1 : 0;
   terrainUniforms.uMeadowTint.value.set(...(b.lawnTint ?? [1, 1, 1]));
   terrainUniforms.uStreet.value = b.streets ? 1 : 0;
+  const city = !!(b.lawn || b.streets || b.suburb);
+  terrainUniforms.uCity.value = city ? 1 : 0;
+  terrainUniforms.uCityKind.value = b.suburb ? 2 : b.streets ? 1 : 0;
+  // mown October turf in Central Park, pale cool granite in Vienna, light yellow-green kikuyu and concrete in Sydney
+  const gr = b.suburb
+    ? { lawn: [0.2, 0.235, 0.07], leaf: [0.3, 0.21, 0.08], pave: [0.4, 0.385, 0.35] }
+    : b.streets
+      ? { lawn: [0.12, 0.18, 0.06], leaf: [0.38, 0.19, 0.05], pave: [0.33, 0.29, 0.23] }
+      : { lawn: [0.125, 0.18, 0.058], leaf: [0.38, 0.17, 0.04], pave: [0.2, 0.2, 0.19] };
+  terrainUniforms.uGrLawn.value.set(...(gr.lawn as [number, number, number]));
+  terrainUniforms.uGrLeaf.value.set(...(gr.leaf as [number, number, number]));
+  terrainUniforms.uGrPave.value.set(...(gr.pave as [number, number, number]));
   if (b.karst > 0 && !cliffTex) {
     const load = (f: string, srgb: boolean) => {
       const t = new THREE.TextureLoader().load(f);
@@ -111,6 +134,7 @@ export function terrainMaterial(map: THREE.Texture) {
     terrainUniforms.uGrassTex.value = g.grass;
     terrainUniforms.uRockTex.value = g.rock;
     terrainUniforms.uGravelTex.value = g.gravel;
+    terrainUniforms.uLawnTex.value = g.lawn;
   }
   const mat = new THREE.MeshLambertMaterial({ map });
   mat.onBeforeCompile = (shader) => {
@@ -144,8 +168,15 @@ uniform float uStoneLum;
 uniform vec3 uSandTint;
 uniform float uSandOn;
 uniform vec3 uMeadowTint;
+uniform float uCity;
+uniform float uCityKind;
+uniform sampler2D uLawnTex;
+uniform vec3 uGrLawn;
+uniform vec3 uGrLeaf;
+uniform vec3 uGrPave;
 varying vec3 vTWNormal;
-${NOISE}`,
+${NOISE}
+${PAVING_GLSL}`,
       )
       .replace(
         '#include <map_fragment>',
@@ -363,6 +394,100 @@ float tBump = 0.0;
     base = mix(base, sandC, sandW * 0.9);
     tDetail = mix(tDetail, 1.0, sandW);
   }
+
+  // ---- city ground: parks, streets and suburbs get a real surface up close (turf, litter, slabs, sand, sandstone);
+  // the photo only carries colour and layout. Everything below is gated on uCity: the other routes skip it
+  if (uCity > 0.5) {
+    float bl0 = dot(base, vec3(0.3, 0.55, 0.15));
+    float gpix = gPix(p);
+    float ypix = fwidth(q.y);
+    float cwgt = 1.0 - smoothstep(200.0, 900.0, camD);
+    float greenPh = smoothstep(0.05, 0.12, s.g - max(s.r, s.b) * 0.93);
+    bool vienna = uCityKind > 0.5 && uCityKind < 1.5;
+    bool suburbK = uCityKind > 1.5;
+    // lawn or paved: Vienna lawns only inside OSM parks (crisp border) or where the photo is clearly green
+    // OSM carriageways (surface mask B) are asphalt; Vienna's wider real lanes also show as dark photo
+    // (edges crisp at any distance: the mask is 3 m per texel, its 0.5 contour is the carriageway edge)
+    float fwb = fwidth(sfc.b) * 0.7 + 0.02;
+    float roadM = smoothstep(0.5 - fwb, 0.5 + fwb, sfc.b);
+    float fwg = fwidth(land.g) * 0.7 + 0.02;
+    float wlaw = vienna ? max(smoothstep(0.5 - fwg, 0.5 + fwg, land.g), greenPh * 0.8 * (1.0 - smoothstep(0.1, 0.3, land.b))) : (suburbK ? 1.0 : 1.0 - greyish * (1.0 - greenPh * 0.5));
+    // the photo's road wider than our ribbon: grass beside the kerb in parks and suburbs
+    if (!vienna) wlaw = max(wlaw, verge * (1.0 - steep));
+    wlaw *= 1.0 - roadM;
+    // sandstone (Sydney): OSM outcrops and cliffs, and slopes steeper than ~40 degrees
+    float fwsg = fwidth(sfc.g) * 0.7 + 0.02;
+    float fwsr = fwidth(sfc.r) * 0.7 + 0.02;
+    float sstW = uSandOn * max(smoothstep(0.5 - fwsg, 0.5 + fwsg, sfc.g), smoothstep(0.38, 0.6, slope));
+    float rk = mix(wRock, sstW, uSandOn);
+    float cw2 = cwgt * (1.0 - rk);
+    if (cw2 > 0.001 || sstW > 0.001) {
+      vec2 pr = vec2(p.x * 0.8 - p.y * 0.6, p.x * 0.6 + p.y * 0.8);
+      float m1 = tNoise(pr * 0.16);
+      float m2 = tNoise(pr * 0.8 + 7.3);
+      float m3 = tNoise(pr * 0.045 + 11.0);
+      float gv = texture2D(uGravelTex, p * 1.3).r * 2.0;
+      // turf: fine grain over soft mottling, a few dry yellow patches; the colour follows the photo's brightness
+      float gt1 = texture2D(uLawnTex, p * 0.42).r * 2.0;
+      float gt2 = texture2D(uLawnTex, vec2(p.y, -p.x) * 0.29 + 0.37).r * 2.0;
+      float gt3 = texture2D(uLawnTex, p * 1.9 + 0.17).r * 2.0;
+      float grain = mix(1.0, gt1 * (0.8 + 0.2 * gt2) * (0.7 + 0.3 * gt3), 0.95);
+      float dry = smoothstep(0.5, 0.8, m3 * 0.6 + m1 * 0.4);
+      dry = max(dry, smoothstep(0.2, 0.4, slope) * 0.7);
+      vec3 lc = uGrLawn * (0.8 + 0.4 * m1) * (0.93 + 0.14 * m2);
+      lc = mix(lc, lc * vec3(1.25, 1.08, 0.6), dry * 0.65);
+      lc *= clamp(bl0 / max(dot(uGrLawn, vec3(0.3, 0.55, 0.15)), 1e-3), 0.9, 1.12) * grain;
+      // under the crowns the turf thins to bare earth and leaf litter
+      // (the noise is turned off the grid axes: value-noise cells read as square tiles under a crown)
+      float soilW = smoothstep(0.4, 0.85, canopy * 1.0 + (m2 - 0.5) * 0.7 + (tNoise(pr * 0.31) - 0.5) * 0.6) * wlaw * 0.9;
+      vec3 lit = mix(vec3(0.15, 0.105, 0.06), vec3(0.23, 0.15, 0.07), tNoise(pr * 1.3)) * (0.75 + 0.5 * tNoise(pr * 4.1));
+      float lf = smoothstep(0.62, 0.72, tNoise(pr * 11.0 + 2.0)) * (1.0 - smoothstep(8.0, 40.0, camD));
+      lit = mix(lit, uGrLeaf * (0.8 + 0.4 * tNoise(pr * 23.0)), lf * 0.5);
+      lc = mix(lc, lit, soilW);
+      // paved: dark asphalt where the photo is dark; slabs (Vienna) or pale concrete and pavers elsewhere
+      vec2 sid = vec2(0.0);
+      float jt = vienna ? gJoint(p, vec2(0.62, 0.92), 0.014, gpix, sid) : 0.0;
+      float slabTone = vienna ? mix(1.0, 0.9 + 0.2 * gHash(sid), 1.0 - smoothstep(0.1, 0.45, gpix / 0.62)) : 1.0;
+      vec3 pc = uGrPave * slabTone * (0.92 + 0.16 * gv) * (0.95 + 0.1 * m2);
+      pc = mix(pc, pc * 0.45, jt);
+      float asph = max(roadM, vienna ? smoothstep(0.17, 0.09, la) : 0.0);
+      vec3 asphC = vec3(0.098, 0.1, 0.105) * (0.82 + 0.3 * gv) * (0.85 + 0.3 * m1) * mix(1.0, 0.8, smoothstep(0.62, 0.72, tNoise(p * 0.3 + 5.0)));
+      pc = mix(pc, asphC, asph);
+      vec3 cityCol = mix(pc, lc, wlaw);
+      // a pale edge stone where a park's lawn meets the pavement (Vienna)
+      if (vienna) {
+        float sd = (land.g - 0.5) * 3.0;
+        float es = (1.0 - smoothstep(0.05, 0.1, abs(sd))) * (1.0 - smoothstep(30.0, 70.0, camD)) * (1.0 - asph);
+        cityCol = mix(cityCol, vec3(0.33, 0.32, 0.3) * (0.9 + 0.2 * gv), es * 0.9);
+      }
+      // beach sand: pale, wind-rippled, darker and smoother in the wet band at the water line
+      if (uSandOn > 0.5) {
+        // (crisp edge; sand does not lie on a 30 degree slope or on a headland ten metres up)
+        float sandW = smoothstep(0.5 - fwsr, 0.5 + fwsr, sfc.r) * (1.0 - scree) * (1.0 - smoothstep(0.3, 0.5, slope)) * (1.0 - smoothstep(5.0, 10.0, vAtmoWorld.y));
+        float wet = 1.0 - smoothstep(0.25, 1.0, vAtmoWorld.y + (tNoise(p * 0.6) - 0.5) * 0.4);
+        vec3 sandC = vec3(0.74, 0.65, 0.47) * mix(vec3(1.0), uSandTint, 0.5) * (0.93 + 0.14 * tNoise(p * vec2(0.5, 2.4)) + 0.1 * (gv - 1.0));
+        sandC *= mix(1.0, 0.62, wet * sandW);
+        cityCol = mix(cityCol, sandC, sandW);
+      }
+      float tb = (m2 - 0.5) * 0.02 * wlaw;
+      base = mix(base, cityCol, cw2);
+      tDetail = mix(tDetail, 1.0, cw2);
+      tBump = mix(tBump, tb, cw2);
+      // sandstone: golden-brown beds, thin bedding lines, dark weathering streaks, over a larger range
+      if (sstW > 0.001) {
+        float cws = 1.0 - smoothstep(150.0, 600.0, camD);
+        float bedY = q.y * 1.1 + 2.0 * tNoise(q.xz * 0.09) + 0.6 * tNoise(q.xz * 0.5);
+        float thick = smoothstep(0.35, 0.65, 0.5 + 0.5 * sin(bedY * 6.2832));
+        float thinW = 1.0 - smoothstep(0.08, 0.35, ypix * 4.5);
+        float thin = (0.5 + 0.5 * sin((bedY * 4.3 + tNoise(q.xz * 0.3) * 2.0) * 6.2832)) * thinW;
+        float streak = tNoise(vec2(q.x * 0.7 + q.z * 0.7, q.y * 0.07));
+        vec3 sst = mix(vec3(0.34, 0.215, 0.105), vec3(0.55, 0.385, 0.2), thick) * (1.0 - 0.28 * thin) * (0.78 + 0.34 * streak);
+        sst *= mix(1.0, clamp(rd, 0.45, 1.7), 0.5);
+        base = mix(base, sst, sstW * cws);
+        tDetail = mix(tDetail, 1.0, sstW * cws);
+      }
+    }
+  }
   tc = base * tDetail;
 
   // water: OSM mask, or sea level
@@ -385,6 +510,8 @@ float tBump = 0.0;
   // skylight on grass in shade: the photo's own shadows are already blue, and the blue sky fill on
   // top turned shaded meadow teal (blue above green); shade should be a darker ground colour
   reflectedLight.indirectDiffuse *= vec3(1.04, 1.0, 0.8);
+  // city grass in shade stays a darker version of its own green, never black-green
+  reflectedLight.indirectDiffuse += diffuseColor.rgb * uCity * 0.1 * vec3(0.95, 1.0, 0.85);
   float away = (1.0 - smoothstep(-0.15, 0.25, dot(bn, uSunDir))) * smoothstep(0.0, 0.2, uSunDir.y);
   reflectedLight.indirectDiffuse += diffuseColor.rgb * uSunColor * vec3(0.92, 1.0, 0.84) * (0.16 * away);
 }`,
@@ -459,5 +586,5 @@ float tBump = 0.0;
 #include <fog_fragment>`,
       );
   };
-  return patchMaterial(mat, { key: 'terrain4' });
+  return patchMaterial(mat, { key: 'terrain5' });
 }

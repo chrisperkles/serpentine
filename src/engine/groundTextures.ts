@@ -148,7 +148,59 @@ function gravel(size: number) {
   return c;
 }
 
-let cache: { grass: THREE.Texture; rock: THREE.Texture; gravel: THREE.Texture } | null = null;
+/**
+ * Mown turf seen from the saddle: a fine, low-contrast grain of short blades in every direction (a mown
+ * lawn lies flat, it does not stand up in tufts) over soft mottling. One tile is ~2.4 m (terrainMaterial
+ * samples it at 0.42/m), so a blade is a few centimetres and the repeat hides under a second, coarser sample.
+ */
+function lawn(size: number) {
+  const [c, ctx] = canvas(size);
+  const r = rng(41);
+  ctx.fillStyle = 'rgb(128,128,128)';
+  ctx.fillRect(0, 0, size, size);
+  blurNoise(ctx, size, r, 9, 34);
+  blurNoise(ctx, size, r, 30, 26);
+  ctx.lineCap = 'round';
+  for (let i = 0; i < 26000; i++) {
+    const x = r() * size;
+    const y = r() * size;
+    const len = 3 + r() * 7;
+    const a = r() * Math.PI * 2;
+    const v = r() < 0.55 ? 62 + r() * 38 : 160 + r() * 60;
+    ctx.strokeStyle = `rgba(${v},${v},${v},${0.3 + r() * 0.35})`;
+    ctx.lineWidth = 0.9 + r() * 0.8;
+    wrapped(ctx, size, (ox, oy) => {
+      ctx.beginPath();
+      ctx.moveTo(x + ox, y + oy);
+      ctx.lineTo(x + ox + Math.cos(a) * len, y + oy + Math.sin(a) * len);
+      ctx.stroke();
+    }, x, y);
+  }
+  return c;
+}
+
+/**
+ * Pavement helpers for city shaders (terrain and the road's kerb ledge): slabs in a running bond whose joints
+ * fade with the pixel footprint instead of aliasing. gJoint returns the joint coverage, id the slab's cell.
+ */
+export const PAVING_GLSL = /* glsl */ `
+float gPix(vec2 p) { vec2 d = fwidth(p); return max(d.x, d.y); }
+float gHash(vec2 p) { p = fract(p * vec2(123.34, 456.21)); p += dot(p, p + 45.32); return fract(p.x * p.y); }
+// pix: metres per pixel (gPix of the same coordinates, taken outside any branch)
+float gJoint(vec2 p, vec2 cell, float jw, float pix, out vec2 id) {
+  float row = floor(p.y / cell.y);
+  float off = 0.5 * cell.x * mod(row, 2.0);
+  vec2 q = vec2(p.x + off, p.y) / cell;
+  id = floor(q);
+  vec2 f = fract(q);
+  vec2 dd = min(f, 1.0 - f) * cell;
+  float d = min(dd.x, dd.y);
+  float cov = clamp((jw * 0.5 - d) / max(pix, 1e-4) + 0.5, 0.0, 1.0);
+  return cov * (1.0 - smoothstep(jw * 1.5, jw * 7.0, pix));
+}
+`;
+
+let cache: { grass: THREE.Texture; rock: THREE.Texture; gravel: THREE.Texture; lawn: THREE.Texture } | null = null;
 
 export function groundTextures(anisotropy = 16) {
   if (!cache) {
@@ -156,6 +208,7 @@ export function groundTextures(anisotropy = 16) {
       grass: markShared(toTexture(grass(512), anisotropy)),
       rock: markShared(toTexture(rock(512), anisotropy)),
       gravel: markShared(toTexture(gravel(512), anisotropy)),
+      lawn: markShared(toTexture(lawn(512), anisotropy)),
     };
   }
   return cache;
