@@ -4,7 +4,7 @@
 import * as THREE from 'three';
 import type { Route } from '../geo/route.ts';
 
-export type BiomeId = 'alpine' | 'mediterranean';
+export type BiomeId = 'alpine' | 'mediterranean' | 'sydney';
 
 export interface Biome {
   id: BiomeId;
@@ -48,7 +48,7 @@ export interface Biome {
   /** false: no centre line at all (narrow mountain roads painted only at the edges). */
   centreLine?: boolean;
   /** House style (Buildings.ts): Salzburg Flachgau, Mallorca, French ski resort, Provence, Manhattan. */
-  buildings: 'flachgau' | 'mallorca' | 'savoie' | 'provence' | 'manhattan';
+  buildings: 'flachgau' | 'mallorca' | 'savoie' | 'provence' | 'manhattan' | 'sydney';
   /** A park drive closed to cars (Central Park): no traffic; people on foot and more cyclists instead. */
   carFree?: boolean;
   /** City routes: low cast-iron park lamp posts instead of street lights. */
@@ -57,6 +57,17 @@ export interface Biome {
   lawn?: boolean;
   /** Park trees: elm, plane and oak shapes with New York autumn colour (Central Park) instead of beech and spruce. */
   parkTrees?: boolean;
+  /** Sydney's east coast: eucalypts, Moreton Bay figs and Norfolk Island pines in the four tree slots; evergreen, summer light. */
+  sydneyTrees?: boolean;
+  /** Suburban street edge: no meadow tufts or cattle, nature strips and ordinary street lamps, left-hand traffic, people on the paths. */
+  suburb?: boolean;
+  /** Drive on the left (Australia, UK): other traffic and cyclists keep to the left of their own direction. */
+  leftHand?: boolean;
+  /** Bare rock (OSM bare_rock, cliffs) and beach sand tints (sRGB-ish linear multipliers), and how pale rock may get. */
+  stone?: { tint: [number, number, number]; lum: number };
+  sand?: [number, number, number];
+  /** Multiplier on the mown-meadow colour of the ground (kikuyu lawn is lighter and yellower than Alpine turf). */
+  lawnTint?: [number, number, number];
 }
 
 export const ALPINE: Biome = {
@@ -103,7 +114,40 @@ export const MEDITERRANEAN: Biome = {
   buildings: 'mallorca',
 };
 
-const BIOMES: Record<BiomeId, Biome> = { alpine: ALPINE, mediterranean: MEDITERRANEAN };
+// Sydney's eastern suburbs. Starts from Alpine (no karst, no Mallorcan sign, road and ground code) but takes the
+// Mediterranean foliage atlas: its narrow leaves read as eucalypt and its needle puffs as Norfolk pine tiers.
+export const SYDNEY: Biome = {
+  ...ALPINE,
+  id: 'sydney',
+  atlas: '/textures/foliage-med.png',
+  conifer: 'pine',
+  evergreen: true,
+  // kikuyu and couch turf in early summer: green-yellow, little straw
+  grass: [new THREE.Color(0.92, 1.0, 0.56), new THREE.Color(1.05, 1.0, 0.62), new THREE.Color(1.0, 0.98, 0.7)],
+  tussocks: true,
+  shrubs: 0.05,
+  shrubTint: new THREE.Color(0.44, 0.56, 0.38),
+  palms: 0.02,
+  ferns: false,
+  rock: new THREE.Color(0.86, 0.7, 0.5),
+  rockDensity: 0.7,
+  steepRocks: 0.4,
+  meadowPush: 0.35,
+  posts: 'es',
+  barrier: 'stonewall',
+  dash: [4, 8],
+  buildings: 'sydney',
+  lawn: true,
+  sydneyTrees: true,
+  suburb: true,
+  leftHand: true,
+  // Hawkesbury sandstone: golden brown; beach sand: pale warm yellow
+  stone: { tint: [1.12, 0.9, 0.62], lum: 0.5 },
+  sand: [1.1, 0.98, 0.78],
+  lawnTint: [1.55, 1.3, 1.0],
+};
+
+const BIOMES: Record<BiomeId, Biome> = { alpine: ALPINE, mediterranean: MEDITERRANEAN, sydney: SYDNEY };
 
 /** Mediterranean climate south of ~43.5° N in Europe and around the basin; Alpine otherwise. */
 export function biomeFor(route: Route, override?: string, tweaks?: Partial<Biome>): Biome {

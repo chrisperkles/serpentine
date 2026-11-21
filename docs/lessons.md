@@ -309,3 +309,19 @@ symptom (what it looked like), cause, fix and where. Newest at the bottom of eac
   port (edits hot-reload a capture otherwise) and its own files: `Buildings.ts`; `treeModels.ts`/`Vegetation.ts`;
   `Life.ts`/`Props.ts`. The three branches merged without a conflict. New park-only behaviour hangs on biome switches
   (`carFree`, `lawn`, `parkTrees`), checked with a same-settings Gaisberg still on main and on the branch.
+
+- **Sydney was Salzburg by the sea.** The route fell into the Alpine biome: Norway spruces, beeches in autumn colour,
+  plaster farmhouses with shutters, meadow tufts, cattle and delineator posts, and right-hand traffic. Fix: a `sydney`
+  biome (Alpine base, Mediterranean foliage atlas) with `sydneyTrees`, `suburb` and `leftHand` switches. The four tree
+  slots carry Norfolk pine, fig, eucalypt and a street tree, chosen by place (distance to the sea from the ground
+  height, OSM parks); buildings get a `sydney` style (brick bungalows with terracotta hips and chimneys, walk-up flats,
+  Art Deco render, shop awnings, muted glass towers through `addCityBlock`) on surface ids 14 to 16; OSM beaches, rock,
+  cliffs and parks go into a surface mask (`uSurface`) that tints sand and sandstone and turns parks into lawn; Life
+  skips cattle and keeps cars and cyclists left. Where: `biome.ts`, `sydneyTrees.ts`, `treeModels.ts`, `Vegetation.ts`,
+  `Buildings.ts`, `terrainMaterial.ts`, `Engine.ts` `buildWaterMask`, `GroundCover.ts`, `Life.ts`, `osm.ts` `Shore`,
+  `scenes/sydney.json`.
+- **A tree model scaled by crown width grew a 4 m trunk.** Instances scale x and z by the crown diameter, so a fig
+  (crown radius 16 m) turned a trunk radius of 0.05 into 1.7 m (4 m at the buttress). Fix: model trunk radii are in
+  crown-width units (0.03 for a fig, 0.017 for a gum); check them against the widest crown the species can get.
+  Where: `treeModels.ts` `figGeometry`.
+

@@ -32,7 +32,21 @@ export const terrainUniforms = {
   uCliffSlope: { value: new THREE.Vector2(0.42, 0.62) },
   uRockOchre: { value: 1 },
   uMaskSize: { value: new THREE.Vector2(1, 1) },
+  /** R beach sand, G sandstone (OSM bare rock and cliffs); blank (all zero) on routes without them. */
+  uSurface: { value: blank as THREE.Texture },
+  uStoneTint: { value: new THREE.Vector3(1.0, 0.98, 0.94) },
+  uStoneLum: { value: 0.36 },
+  uSandTint: { value: new THREE.Vector3(1, 1, 1) },
+  uSandOn: { value: 0 },
+  uMeadowTint: { value: new THREE.Vector3(1, 1, 1) },
 };
+
+/** Beach and sandstone mask over the same area as the water mask (Sydney). */
+export function setSurfaceMask(tex: THREE.Texture | null) {
+  const old = terrainUniforms.uSurface.value;
+  terrainUniforms.uSurface.value = tex ?? blank;
+  if (old !== blank && old !== tex) old.dispose();
+}
 
 export function setWaterMask(tex: THREE.Texture, x0: number, z0: number, w: number, h: number, canopy?: THREE.Texture) {
   const old = terrainUniforms.uWaterMask.value;
@@ -54,6 +68,11 @@ export function setTerrainBiome(b: Biome) {
   terrainUniforms.uCliffSlope.value.set(...(b.cliffSlope ?? [0.42, 0.62]));
   terrainUniforms.uRockOchre.value = b.rockOchre ?? 1;
   terrainUniforms.uBareAbove.value = b.bareAbove ?? 1e5;
+  terrainUniforms.uStoneTint.value.set(...(b.stone?.tint ?? [1.0, 0.98, 0.94]));
+  terrainUniforms.uStoneLum.value = b.stone?.lum ?? 0.36;
+  terrainUniforms.uSandTint.value.set(...(b.sand ?? [1, 1, 1]));
+  terrainUniforms.uSandOn.value = b.sand ? 1 : 0;
+  terrainUniforms.uMeadowTint.value.set(...(b.lawnTint ?? [1, 1, 1]));
   if (b.karst > 0 && !cliffTex) {
     const load = (f: string, srgb: boolean) => {
       const t = new THREE.TextureLoader().load(f);
@@ -69,6 +88,7 @@ export function setTerrainBiome(b: Biome) {
 }
 
 export function clearWaterMask() {
+  setSurfaceMask(null);
   setWaterMask(blank, 0, 0, 1, 1);
 }
 
@@ -114,6 +134,12 @@ uniform float uPhotoSea;
 uniform sampler2D uCliffTex;
 uniform sampler2D uCliffNor;
 uniform vec2 uMaskSize;
+uniform sampler2D uSurface;
+uniform vec3 uStoneTint;
+uniform float uStoneLum;
+uniform vec3 uSandTint;
+uniform float uSandOn;
+uniform vec3 uMeadowTint;
 varying vec3 vTWNormal;
 ${NOISE}`,
       )
@@ -155,6 +181,9 @@ float tBump = 0.0;
   float verge = smoothstep(0.2, 0.7, canTex.g) * (1.0 - smoothstep(0.18, 0.36, 1.0 - clamp(normalize(vTWNormal).y, 0.0, 1.0)));
   // OSM scree and bare rock: pale stones, never pushed to meadow green
   float scree = smoothstep(0.3, 0.8, canTex.b) * (1.0 - verge);
+  // beach sand (R) and sandstone outcrops (G) from OSM, where a route has them (Sydney)
+  vec3 sfc = inMask ? texture2D(uSurface, lmuv).rgb : vec3(0.0);
+  scree = max(scree, smoothstep(0.3, 0.8, sfc.g) * (1.0 - verge));
   // a route's bare top (scene biomeTweaks.bareAbove): pale ground up there is stone, not meadow
   scree = max(scree, smoothstep(uBareAbove - 60.0, uBareAbove + 80.0, vAtmoWorld.y) * smoothstep(0.34, 0.5, L) * (1.0 - canopy) * (1.0 - verge));
   float meadow = smoothstep(0.3, 0.8, land.g) * (1.0 - smoothstep(0.3, 0.8, land.b)) * (1.0 - canopy) * uMeadowPush * (1.0 - scree);
@@ -223,7 +252,7 @@ float tBump = 0.0;
   float straw = smoothstep(0.55, 0.8, tNoise(p * 0.035) * 0.7 + tNoise(p * 0.21) * 0.3);
   // mown grass has a fairly constant albedo: clamp bright (snowy or bleached) photo texels
   float blc = min(bl, 0.3 + 0.06 * straw);
-  vec3 meadowCol = mix(blc * vec3(0.8, 1.06, 0.5), blc * vec3(1.05, 1.0, 0.62), straw * 0.6) * 1.05;
+  vec3 meadowCol = mix(blc * vec3(0.8, 1.06, 0.5), blc * vec3(1.05, 1.0, 0.62), straw * 0.6) * 1.05 * uMeadowTint;
   float bright = smoothstep(0.5, 0.75, L) * (1.0 - smoothstep(1500.0, 1950.0, vAtmoWorld.y)) * uMeadowPush * (1.0 - scree);
   base = mix(base, meadowCol, clamp(grassy * 0.6 + bright * 0.9 * (1.0 - canopy), 0.0, 1.0));
   // under the canopy: shaded forest floor, leaf litter close up
@@ -303,9 +332,23 @@ float tBump = 0.0;
   // the odd plant (Mont Ventoux's top)
   {
     float sL = dot(base, vec3(0.3, 0.55, 0.15));
-    vec3 stone = base * min(1.0, 0.36 / max(sL, 1e-3)) * vec3(1.0, 0.98, 0.94);
+    vec3 stone = base * min(1.0, uStoneLum / max(sL, 1e-3)) * uStoneTint;
     stone *= 0.78 + 0.3 * tNoise(p * 0.09) + 0.14 * (tNoise(p * 0.7) - 0.5);
     base = mix(base, stone, scree * (1.0 - uKarst));
+  }
+  // suburbs: the photo of built-up land is a patchwork of roofs, shadows and tarmac in odd pastels; calm it to
+  // a warm olive-grey that reads as nature strip and garden from the road
+  {
+    float bltS = smoothstep(0.3, 0.8, land.b) * uSandOn * (1.0 - scree);
+    float bl2 = dot(base, vec3(0.3, 0.55, 0.15));
+    base = mix(base, vec3(bl2) * vec3(0.98, 1.02, 0.78), 0.65 * bltS);
+  }
+  // beach sand: pale warm, nearly flat, wind-rippled a little
+  {
+    float sandW = smoothstep(0.3, 0.8, sfc.r) * uSandOn * (1.0 - scree);
+    vec3 sandC = vec3(0.78, 0.67, 0.47) * uSandTint * (0.92 + 0.16 * tNoise(p * 0.5) + 0.06 * (tNoise(p * 3.1) - 0.5));
+    base = mix(base, sandC, sandW * 0.9);
+    tDetail = mix(tDetail, 1.0, sandW);
   }
   tc = base * tDetail;
 
@@ -403,5 +446,5 @@ float tBump = 0.0;
 #include <fog_fragment>`,
       );
   };
-  return patchMaterial(mat, { key: 'terrain3' });
+  return patchMaterial(mat, { key: 'terrain4' });
 }

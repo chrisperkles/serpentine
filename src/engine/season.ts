@@ -87,3 +87,16 @@ export function parkTint(species: 'elm' | 'plane' | 'oak', day: number, elevatio
   if (species === 'oak' && (rand * 9.7) % 1 < 0.22 && p > 0.4) out.lerp(PARK_MAPLE, Math.min(1, (p - 0.4) * 1.5));
   return out.multiplyScalar(0.86 + rand * 0.26);
 }
+
+/**
+ * Sydney in early summer, all evergreen: eucalypts grey-green, Norfolk pines dark, Moreton Bay figs the darkest and
+ * glossiest, street and garden trees (camphor laurel, brush box, jacaranda in leaf) a fresher mid green.
+ */
+export function sydneyTint(species: 'gum' | 'pine' | 'fig' | 'street', rand: number, out: THREE.Color): THREE.Color {
+  switch (species) {
+    case 'gum': return out.setRGB(0.5, 0.58, 0.4).multiplyScalar(0.82 + rand * 0.3);
+    case 'pine': return out.setRGB(0.3, 0.42, 0.28).multiplyScalar(0.8 + rand * 0.25);
+    case 'fig': return out.setRGB(0.2, 0.36, 0.17).multiplyScalar(0.82 + rand * 0.25);
+    default: return out.setRGB(0.34, 0.5, 0.24).multiplyScalar(0.8 + rand * 0.32);
+  }
+}

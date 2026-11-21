@@ -322,7 +322,7 @@ export class GroundCover extends THREE.Group {
       const rx = Math.cos(h), rz = Math.sin(h);
       for (const side of [-1, 1]) {
         // a mown park lawn is turf: only a few longer tufts along the edge and around the trees
-        const tries = Math.round(120 * density * (B.lawn ? 0.1 : 1));
+        const tries = Math.round(120 * density * (B.suburb ? 0.22 : B.lawn ? 0.1 : 1));
         for (let k = 0; k < tries; k++) {
           const u = r();
           // denser verge right next to the asphalt, patchier meadow further out
@@ -352,6 +352,34 @@ export class GroundCover extends THREE.Group {
               if (Number.isFinite(fy)) ferns.push(x, fy - 0.05, z, 0.5 + r() * 0.7, r() * 6.28, 0);
             }
             if (r() < 0.85) continue;
+          }
+          if (B.suburb) {
+            // suburban edge: nature strip and lawn, gardens behind them; coastal heath on the headlands
+            const sy = groundHeight(x, z);
+            if (!Number.isFinite(sy)) continue;
+            const ssx = groundHeight(x + 1.5, z) - sy, ssz = groundHeight(x, z + 1.5) - sy;
+            if (Math.hypot(ssx, ssz) / 1.5 > 0.7) {
+              if (r() < 0.05 * (B.steepRocks ?? 0.4)) rocks.push(x, sy - 0.15, z, 0.4 + r() * 1.1, r() * 6.28, 0);
+              continue;
+            }
+            if (cover === 2 || canopy > 0.5) {
+              // garden shrubs now and then (hedges, bottlebrush)
+              if (r() < 0.012 && d > halfWidth + 3) cushions.push(x, sy - 0.2, z, 0.7 + r() * 0.8, r() * 6.28, 1);
+              continue;
+            }
+            if (cover === 1) {
+              // lawn: palms along the park's edge, the odd long tuft at the kerb
+              if (this.palm && d > halfWidth + 3 && d < halfWidth + 16 && r() < B.palms * 0.1) palms.push(x, sy - 0.05, z, 1.5 + r() * 0.9, r() * 6.28, 0);
+              else if (d < halfWidth + 1.4 && r() < 0.08) grass.push(x, sy - 0.03, z, 0.3 + r() * 0.2, r() * 6.28, 0);
+              continue;
+            }
+            // open ground (headland, dune, verge): low scrub and tussock, thicker up on the cliffs
+            const heath = sy > 6 ? 1 : 0.35;
+            const pk = r();
+            if (pk < 0.1 * heath && d > halfWidth + 1.5) cushions.push(x, sy - 0.2, z, 0.9 + r() * 1.3, r() * 6.28, 1);
+            else if (pk < 0.1 * heath + 0.22 * heath) grass.push(x, sy - 0.03, z, 0.6 + r() * 0.6, r() * 6.28, 0);
+            else if (r() < 0.01 * B.rockDensity) rocks.push(x, sy - 0.18, z, 0.3 + r() * r() * 1.2, r() * 6.28, 0);
+            continue;
           }
           // built-up: pavements and lawns rather than long grass
           if (cover === 2 && (d > halfWidth + 2.2 ? r() < 0.75 : r() < 0.45)) continue;
