@@ -9,7 +9,7 @@ import { pointAt, type Route, type RouteIndex, type RoutePoint } from '../geo/ro
 import { patchMaterial } from './atmosphere.ts';
 import { loadModel } from './Landmarks.ts';
 import type { Biome } from './biome.ts';
-import { accessoryMaterial, dogGeometry, leashGeometry, pedicabGeometry, Person, PersonKit, strollerGeometry, surfboardGeometry, towelGeometry } from './People.ts';
+import { type LookKind, accessoryMaterial, dogGeometry, leashGeometry, pedicabGeometry, Person, PersonKit, strollerGeometry, surfboardGeometry, taxiSignGeometry, towelGeometry } from './People.ts';
 import { parkBenches, type BenchSpot } from './Props.ts';
 import { Rider } from './Rider.ts';
 import { tramAt, tramGeometry, tramLines, tramMaterial, type TramLine } from './Tram.ts';
@@ -17,6 +17,12 @@ import { WorldGroup } from './dispose.ts';
 
 const CANOPIES = ['#f5a11a', '#d7263d', '#1b98e0', '#2bb673', '#f4d35e', '#7b2cbf', '#ff6b35', '#e0e0e0'];
 const KITS = ['#e63946', '#1d3557', '#2a9d8f', '#f4a261', '#f1f1ee', '#111214', '#ffb703', '#8338ec'];
+// city cyclists: more kits, shorts and bikes than the island's club riders
+const CITY_KITS = [...KITS, '#e11d48', '#0ea5e9', '#84cc16', '#f97316', '#334155', '#f8fafc'];
+const CITY_SHORTS = ['#111214', '#111214', '#1d3557', '#f1f1ee', '#e63946', '#2a9d8f'];
+const CITY_BIKES = ['#e9e9e4', '#1a1c1f', '#c0392b', '#2c3e50', '#2a9d8f'];
+// Vienna drives white, silver, black and grey; taxis are cream; the post is yellow
+const VIE_CARS = ['#f2f2ef', '#d9dbdd', '#9ea3a8', '#1f2329', '#1f2329', '#2d4a6b', '#f2f2ef', '#8c1c13', '#c9ccd0'];
 // Australia drives white, silver and grey
 const SYD_CARS = ['#f2f2ef', '#d9dbdd', '#9ea3a8', '#1f2329', '#8c1c13', '#2d4a6b', '#f2f2ef', '#c7a25a'];
 const CAR_COLOURS = ['#5d6f86', '#b8bcc2', '#1f2329', '#8c1c13', '#f2f2ef', '#2d4a6b', '#4a5d3a', '#c7a25a'];
@@ -95,6 +101,8 @@ interface Walker {
   /** Rigged park person: legs swing instead of the whole figure bobbing. */
   rig?: Person;
   run?: boolean;
+  /** City pavements: not yet put on a path near the rider. */
+  fresh?: boolean;
 }
 
 /** Someone on foot on a car-free drive: walking or running along the lane at the edge. */
@@ -112,13 +120,15 @@ interface Jogger {
   phase: number;
   /** Not yet put on the road around the rider. */
   fresh: boolean;
+  /** Where it starts in the view ahead at load and after a jump (m ahead of the rider; a hash of the rider's position shuffles who gets which). */
+  slot: number;
   /** Sydney pavements: which side of the road (+1 right of the route heading, -1 left). */
   side?: 1 | -1;
 }
 
 /** Someone sitting on one of the park benches, kept on the benches near the rider. */
 interface Sitter {
-  obj: Person;
+  obj: THREE.Object3D;
   seat: number;
 }
 
@@ -144,6 +154,33 @@ interface Spot {
   side: 1 | -1;
   /** Sand at the water's edge (surfers) rather than dry beach. */
   wet?: boolean;
+  /** Direction people stand facing (tram stops: towards the track), rad as for an object's rotation.y. */
+  face?: number;
+}
+
+/** A footway or promenade near the route that pedestrians are put on, with its middle for finding the ones near the rider. */
+interface WalkLine {
+  pts: Float32Array;
+  mx: number;
+  mz: number;
+}
+
+/** A cyclist riding a mapped cycle path (the Ring's cycle tracks). */
+interface PathRider {
+  obj: Rider;
+  line: number;
+  d: number;
+  dir: 1 | -1;
+  speed: number;
+  on: boolean;
+}
+
+/** A mapped cycle path with its length and the route distance of its middle. */
+interface CycleLine {
+  pts: Float32Array;
+  cum: Float32Array;
+  len: number;
+  s: number;
 }
 
 /** A pedicab on the drive: a rider pedalling and sometimes passengers. */
@@ -182,6 +219,7 @@ export class Life extends WorldGroup {
   private rand = rng(99);
   private route: Route | null = null;
   private tmp: Partial<RoutePoint> = {};
+  private tmpR: Partial<RoutePoint> = {};
   /** Coaches drive slower than cars. */
   private coaches = new Set<THREE.Object3D>();
   private cyclistPool: Rider[] = [];
@@ -192,6 +230,8 @@ export class Life extends WorldGroup {
   /** +1 drive on the right, -1 on the left (biome.leftHand). */
   private keep = 1;
   private suburb = false;
+  /** Lane centre of other traffic (m from the route line, to the right of its own heading): city carriageways are wider. */
+  private lane = 1.6;
   /** Vienna: people on the pavements, cyclists, cars stay (biome.streetLife). */
   private streetLife = false;
   private standSpots: { x: number; z: number; s: number; h: number }[] = [];
@@ -217,6 +257,19 @@ export class Life extends WorldGroup {
   /** Per route sample: sand within ~150 m, so pavements near the beach are busier. */
   private coastal: Uint8Array | null = null;
   private coverAt: (x: number, z: number) => number = () => 0;
+  /** The route moved by more than a view since the last frame (or this is the first): the crowd is dealt out again. */
+  private jumped = true;
+  /** A city's crowd is still being built: nothing moves yet, so the first deal happens once everyone exists. */
+  private pending = false;
+  /** City streets and Sydney are busy: traffic every few seconds, not every half minute. */
+  private busy = false;
+  /** Footways near the route where pedestrians are pooled around the rider. */
+  private walkLines: WalkLine[] = [];
+  private cycleLines: CycleLine[] = [];
+  private pathRiders: PathRider[] = [];
+  /** Vienna tram stops: platforms near the route, spots along them and the groups waiting there. */
+  private stopSpots: Spot[] = [];
+  private stops: Cluster[] = [];
 
   async build(
     route: Route,
@@ -233,6 +286,9 @@ export class Life extends WorldGroup {
     this.keep = biome?.leftHand ? -1 : 1;
     this.suburb = biome?.suburb === true;
     this.streetLife = biome?.streetLife === true;
+    this.busy = this.suburb || this.streetLife;
+    this.pending = this.busy || this.carFree;
+    if (this.streetLife) this.lane = 2.0;
     this.halfWidth = halfWidth;
     const r = rng(7);
     // --- paragliders over the take-off sites
@@ -267,6 +323,7 @@ export class Life extends WorldGroup {
       this.index = index;
       this.coverAt = coverAt;
       await this.buildSuburb(index, osm, r);
+      this.pending = false;
       return;
     }
     if (this.carFree) {
@@ -274,6 +331,7 @@ export class Life extends WorldGroup {
       this.index = index;
       this.coverAt = coverAt;
       await this.buildPark(route, index, osm, r);
+      this.pending = false;
       return;
     }
     // --- cattle: herds on meadows near the road (not in a city: its lawns are parks)
@@ -372,31 +430,66 @@ export class Life extends WorldGroup {
         });
       }
     }
-    // --- vehicle models for traffic
-    const [hatch, van, moto] = await Promise.all([loadModel('car-hatchback.glb'), loadModel('car-van.glb'), loadModel('motorbike.glb')]);
-    for (let i = 0; i < 4; i++) this.cars.push(tinted(hatch, ['car-hatchback_body'], CAR_COLOURS[i * 2 % CAR_COLOURS.length]));
-    for (let i = 0; i < 2; i++) this.cars.push(tinted(van, ['car-van_body'], CAR_COLOURS[(i * 3 + 4) % CAR_COLOURS.length]));
-    for (let i = 0; i < 3; i++) this.cars.push(tinted(moto, ['moto_tank'], CANOPIES[i + 1]));
-    for (const c of this.cars) {
-      c.visible = false;
-      this.add(c);
+    // --- vehicle models for traffic (a city street builds its own set)
+    if (!this.streetLife) {
+      const [hatch, van, moto] = await Promise.all([loadModel('car-hatchback.glb'), loadModel('car-van.glb'), loadModel('motorbike.glb')]);
+      for (let i = 0; i < 4; i++) this.cars.push(tinted(hatch, ['car-hatchback_body'], CAR_COLOURS[i * 2 % CAR_COLOURS.length]));
+      for (let i = 0; i < 2; i++) this.cars.push(tinted(van, ['car-van_body'], CAR_COLOURS[(i * 3 + 4) % CAR_COLOURS.length]));
+      for (let i = 0; i < 3; i++) this.cars.push(tinted(moto, ['moto_tank'], CANOPIES[i + 1]));
+      for (const c of this.cars) {
+        c.visible = false;
+        this.add(c);
+      }
     }
     if (this.streetLife) {
       this.index = index;
       await this.buildStreet(route, index, osm, r);
+      this.pending = false;
     }
   }
 
   /**
-   * A city street (Vienna Ring): people walking the pavements mapped as footways, small groups standing about,
-   * and cyclists in the carriageway; cars stay. Everyone keeps clear of the asphalt.
+   * A city street (Vienna Ring): traffic on the carriageway and cars at the kerb from the first frame, people on the
+   * pavements mapped as footways (pooled around the rider), small groups standing about, queues at the tram stops,
+   * cyclists on the mapped cycle paths and in the carriageway. Everyone keeps clear of the asphalt.
    */
   private async buildStreet(route: Route, index: RouteIndex, osm: OsmWorld, r: () => number) {
-    const kit = await PersonKit.load();
-    const person = (scale = 0.9 + r() * 0.18) => kit.rigged(Math.floor(r() * kit.count), scale);
+    const [kit, hatch, van, moto, bus] = await Promise.all([
+      PersonKit.load(), loadModel('car-hatchback.glb'), loadModel('car-van.glb'), loadModel('motorbike.glb'), loadModel('bus.glb'),
+    ]);
+    const acc = accessoryMaterial();
     const clear = this.halfWidth + 2.2;
-    // pavements: footways near the route whose every node is off the carriageway, long enough not to pace to and fro
-    const lines: { pts: Float32Array; len: number }[] = [];
+    // --- traffic and parked cars: tinted bases are cloned, so the clones share geometry and materials
+    const taxi = () => {
+      const o = tinted(hatch, ['car-hatchback_body'], '#efe6c8');
+      const sign = new THREE.Mesh(taxiSignGeometry(), acc);
+      sign.position.set(0, 1.48, 0);
+      o.add(sign);
+      return o;
+    };
+    for (const c of VIE_CARS) this.cars.push(tinted(hatch, ['car-hatchback_body'], c));
+    this.cars.push(taxi(), taxi());
+    // Austrian Post is yellow
+    for (const c of ['#f2f2ef', '#f5c400', '#d9dbdd']) this.cars.push(tinted(van, ['car-van_body'], c));
+    // Wiener Linien buses are red and white
+    const vbus = tinted(tinted(bus, ['bus_body'], '#c1121f'), ['bus_stripe'], '#f4f4f2');
+    this.cars.push(vbus);
+    this.coaches.add(vbus);
+    for (let i = 0; i < 2; i++) this.cars.push(tinted(moto, ['moto_tank'], CANOPIES[i + 1]));
+    for (const c of this.cars) {
+      c.visible = false;
+      this.add(c);
+    }
+    const bases = [...VIE_CARS.map((c) => tinted(hatch, ['car-hatchback_body'], c)), tinted(van, ['car-van_body'], '#f2f2ef'), tinted(van, ['car-van_body'], '#f5c400'), taxi()];
+    for (let i = 0; i < 18; i++) {
+      const o = bases[(i * 5) % bases.length].clone(true);
+      o.visible = false;
+      this.add(o);
+      this.parked.push({ obj: o, placed: false, s: 0 });
+    }
+    const lines = tramLines(osm, index, this.halfWidth + 0.4);
+    this.streetSpots(route, index, osm, lines);
+    // --- pavements: footways near the route whose every node is off the carriageway, long enough not to pace to and fro
     for (const l of osm.roads) {
       if (!['footway', 'pedestrian', 'path'].includes(l.kind) || l.pts.length < 6) continue;
       let len = 0, ok = true;
@@ -407,20 +500,20 @@ export class Life extends WorldGroup {
       if (!ok || len < 40) continue;
       const m = Math.floor(l.pts.length / 4) * 2;
       if (index.nearest(l.pts[m], l.pts[m + 1], 110).index < 0) continue;
-      lines.push({ pts: l.pts, len });
+      this.walkLines.push({ pts: l.pts, mx: l.pts[m], mz: l.pts[m + 1] });
     }
-    for (let i = 0; i < 90 && lines.length; i++) {
-      const l = lines[Math.floor(r() * lines.length)];
-      const run = r() < 0.1;
-      const p = person();
+    for (let i = 0; i < 84 && this.walkLines.length; i++) {
+      const run = r() < 0.09;
+      const p = kit.rigged(kit.look(run ? 'run' : 'city', r), 0.93 + r() * 0.12, run ? 'run' : 'walk');
+      p.visible = false;
       this.add(p);
       this.walkers.push({
-        obj: p, rig: p, run, pts: l.pts, seg: Math.floor(r() * (l.pts.length / 2 - 1)), t: r(), dir: r() < 0.5 ? 1 : -1,
-        speed: run ? 2.4 + r() * 0.8 : 1.0 + r() * 0.5, phase: r() * 10,
+        obj: p, rig: p, run, pts: this.walkLines[0].pts, seg: 0, t: 0, dir: r() < 0.5 ? 1 : -1,
+        speed: run ? 2.4 + r() * 0.8 : 1.0 + r() * 0.5, phase: r() * 10, fresh: true,
       });
     }
     // places to stand: points along those pavements, found once and handed out ahead of the rider
-    for (const l of lines) {
+    for (const l of this.walkLines) {
       for (let i = 0; i + 3 < l.pts.length; i += 2) {
         const x = (l.pts[i] + l.pts[i + 2]) / 2, z = (l.pts[i + 1] + l.pts[i + 3]) / 2;
         const near = index.nearest(x, z, 60);
@@ -428,32 +521,40 @@ export class Life extends WorldGroup {
         this.standSpots.push({ x, z, s: near.index * route.step, h: route.heading[near.index] });
       }
     }
-    for (let i = 0; i < 22; i++) {
-      const g = new THREE.Group();
-      const n = 1 + Math.floor(r() * 3.2);
-      const rad = 0.55 + r() * 0.35;
-      const a0 = r() * Math.PI * 2;
-      for (let k = 0; k < n; k++) {
-        const kid = n > 1 && k === n - 1 && r() < 0.2;
-        const m = kit.standing(Math.floor(r() * kit.count), kid ? 0.62 : 0.9 + r() * 0.18);
-        const a = a0 + (k / n) * Math.PI * 2;
-        m.position.set(n === 1 ? 0 : Math.cos(a) * rad, 0, n === 1 ? 0 : Math.sin(a) * rad);
-        m.rotation.y = n === 1 ? 0 : Math.atan2(-Math.cos(a), -Math.sin(a)) + (r() - 0.5) * 0.7;
-        g.add(m);
-      }
+    for (let i = 0; i < 30; i++) {
+      const g = this.crowd(kit, 'city', 1 + Math.floor(r() * 3.2), r, 0.2);
       g.visible = false;
       this.add(g);
       this.clusters.push({ obj: g, placed: false, s: 0 });
     }
-    for (let i = 0; i < 6; i++) {
-      const c = new Rider({ kit: KITS[i], accent: '#111214', bike: i % 2 ? '#e9e9e4' : '#1a1c1f' });
-      c.visible = false;
-      this.add(c);
-      this.cyclistPool.push(c);
+    // waiting at the tram stops: two to five people in a row along the platform, facing the track
+    this.tramStops(route, index, osm, lines);
+    for (let i = 0; this.stopSpots.length && i < 12; i++) {
+      const g = new THREE.Group();
+      const n = 2 + Math.floor(r() * 3.6);
+      for (let k = 0; k < n; k++) {
+        const m = kit.standing(kit.look('city', r), 0.94 + r() * 0.1);
+        m.position.set((k - (n - 1) / 2) * 0.85 + (r() - 0.5) * 0.3, 0, (r() - 0.5) * 0.35);
+        m.rotation.y = (r() - 0.5) * 0.6;
+        g.add(m);
+      }
+      g.visible = false;
+      this.add(g);
+      this.stops.push({ obj: g, placed: false, s: 0 });
+    }
+    // cyclists ride the mapped cycle paths beside the carriageway (cars share it with trams and buses, not with riders)
+    this.cycleTracks(route, index, osm);
+    if (this.cycleLines.length) {
+      for (let i = 0; i < 7; i++) {
+        const c = new Rider({ kit: CITY_KITS[Math.floor(r() * CITY_KITS.length)], accent: CITY_SHORTS[Math.floor(r() * CITY_SHORTS.length)], bike: CITY_BIKES[Math.floor(r() * CITY_BIKES.length)] });
+        c.visible = false;
+        this.add(c);
+        this.pathRiders.push({ obj: c, line: 0, d: 0, dir: 1, speed: 4 + r() * 2.5, on: false });
+      }
     }
     // trams on the track Props laid (the same pieces: cut where they would cross the carriageway)
     const tmp = { x: 0, z: 0, dx: 0, dz: 0 };
-    for (const line of tramLines(osm, index, this.halfWidth + 0.4)) {
+    for (const line of lines) {
       if (line.len < 80) continue;
       const ss: number[] = [];
       for (let d = 0; d <= line.len; d += 15) {
@@ -472,6 +573,160 @@ export class Life extends WorldGroup {
         this.add(m);
         this.trams.push({ obj: m, track: 0, s: 0, speed: 6 + r() * 3, on: false });
       }
+    }
+  }
+
+  /** A few people standing about, turned in towards each other like friends chatting (alone: looking any way). */
+  private crowd(kit: PersonKit, look: LookKind, n: number, r: () => number, kids = 0.15): THREE.Group {
+    const g = new THREE.Group();
+    const rad = 0.55 + r() * 0.35, a0 = r() * Math.PI * 2;
+    for (let k = 0; k < n; k++) {
+      const kid = n > 1 && k === n - 1 && r() < kids;
+      const m = kit.standing(kit.look(look, r), kid ? 0.62 : 0.93 + r() * 0.1);
+      const a = a0 + (k / n) * Math.PI * 2;
+      m.position.set(n === 1 ? 0 : Math.cos(a) * rad, 0, n === 1 ? 0 : Math.sin(a) * rad);
+      // the figures face -Z: this turns them in towards the middle of the group
+      m.rotation.y = n === 1 ? (r() - 0.5) * 1.4 : Math.atan2(Math.cos(a), Math.sin(a)) + (r() - 0.5) * 0.7;
+      g.add(m);
+    }
+    return g;
+  }
+
+  /** `n` cyclists for the carriageway, each with their own kit, shorts and bike. */
+  private makeCyclists(n: number, r: () => number) {
+    for (let i = 0; i < n; i++) {
+      const c = new Rider({ kit: CITY_KITS[Math.floor(r() * CITY_KITS.length)], accent: CITY_SHORTS[Math.floor(r() * CITY_SHORTS.length)], bike: CITY_BIKES[Math.floor(r() * CITY_BIKES.length)] });
+      c.visible = false;
+      this.add(c);
+      this.cyclistPool.push(c);
+    }
+  }
+
+  /**
+   * Kerb spaces beside a city carriageway where a car can stand: flat ground off the road, clear of trunks, lamps,
+   * benches, tram track and the mouths of side streets.
+   */
+  private streetSpots(route: Route, index: RouteIndex, osm: OsmWorld, tram: TramLine[]) {
+    const hw = this.halfWidth;
+    const cell = 12;
+    const grid = (xs: number[]) => {
+      const g = new Map<number, number[]>();
+      for (let i = 0; i < xs.length; i += 2) {
+        const k = Math.floor(xs[i] / cell) * 100003 + Math.floor(xs[i + 1] / cell);
+        const l = g.get(k);
+        if (l) l.push(xs[i], xs[i + 1]);
+        else g.set(k, [xs[i], xs[i + 1]]);
+      }
+      return g;
+    };
+    const near = (g: Map<number, number[]>, x: number, z: number, d: number) => {
+      for (let a = Math.floor((x - d) / cell); a <= Math.floor((x + d) / cell); a++) {
+        for (let b = Math.floor((z - d) / cell); b <= Math.floor((z + d) / cell); b++) {
+          const l = g.get(a * 100003 + b);
+          if (l) for (let i = 0; i < l.length; i += 2) if (Math.hypot(l[i] - x, l[i + 1] - z) < d) return true;
+        }
+      }
+      return false;
+    };
+    const solid: number[] = [];
+    for (let i = 0; i + 1 < osm.trees.length; i += 2) solid.push(osm.trees[i], osm.trees[i + 1]);
+    for (const p of osm.pois) if (['street_lamp', 'bench', 'bus_stop', 'shelter'].includes(p.kind)) solid.push(p.x, p.z);
+    const track: number[] = [];
+    for (const l of tram) {
+      for (let d = 0; d <= l.len; d += 2.5) {
+        const o = { x: 0, z: 0, dx: 0, dz: 0 };
+        tramAt(l, Math.min(d, l.len - 0.01), o);
+        track.push(o.x, o.z);
+      }
+    }
+    const side: number[] = [];
+    for (const l of osm.roads) {
+      if (['path', 'footway', 'pedestrian', 'cycleway', 'steps', 'track', 'corridor', 'platform', 'busway'].includes(l.kind)) continue;
+      for (let i = 0; i + 3 < l.pts.length; i += 2) {
+        const ax = l.pts[i], az = l.pts[i + 1], bx = l.pts[i + 2], bz = l.pts[i + 3];
+        const n = Math.max(1, Math.ceil(Math.hypot(bx - ax, bz - az) / 4));
+        for (let k = 0; k < n; k++) {
+          const x = ax + ((bx - ax) * k) / n, z = az + ((bz - az) * k) / n;
+          if (index.nearest(x, z, 40).index < 0 || index.nearest(x, z, hw + 1.5).index >= 0) continue;
+          side.push(x, z);
+        }
+      }
+    }
+    const solidG = grid(solid), trackG = grid(track), sideG = grid(side);
+    const hash = (i: number, k: number) => {
+      const x = Math.sin(i * 12.9898 + k * 78.233) * 43758.5453;
+      return x - Math.floor(x);
+    };
+    const stepI = Math.max(1, Math.round(7 / route.step));
+    for (let i = 2; i < route.n - 2; i += stepI) {
+      const h = route.heading[i], rx = Math.cos(h), rz = Math.sin(h), fx = Math.sin(h), fz = -Math.cos(h);
+      const s = i * route.step;
+      for (const sd of [-1, 1] as const) {
+        if (hash(i, sd + 5) > 0.55) continue;
+        const x = route.x[i] + rx * sd * (hw + 1.25), z = route.z[i] + rz * sd * (hw + 1.25);
+        const clearOf = (g: Map<number, number[]>, d: number) => [-1.7, 0, 1.7].every((o) => !near(g, x + fx * o, z + fz * o, d));
+        if (!clearOf(solidG, 1.5) || !clearOf(trackG, 2.2) || near(sideG, x, z, 8)) continue;
+        if ([-2, 2].some((o) => index.nearest(x + fx * o, z + fz * o, hw + 0.4).index >= 0)) continue;
+        const y = this.groundAt(x, z);
+        if (!Number.isFinite(y) || Math.abs(y - route.ele[i]) > 0.5) continue;
+        this.parkSpots.push({ x, z, y, s, h, side: sd });
+      }
+    }
+  }
+
+  /** Spots along the mapped tram platforms (OSM highway=platform) near the route, each turned to the nearest track. */
+  private tramStops(route: Route, index: RouteIndex, osm: OsmWorld, tram: TramLine[]) {
+    const hw = this.halfWidth;
+    const o = { x: 0, z: 0, dx: 0, dz: 0 };
+    const tracks: number[] = [];
+    for (const l of tram) {
+      for (let d = 0; d <= l.len; d += 3) {
+        tramAt(l, Math.min(d, l.len - 0.01), o);
+        tracks.push(o.x, o.z);
+      }
+    }
+    for (const l of osm.roads) {
+      if (l.kind !== 'platform' || l.pts.length < 4) continue;
+      for (let i = 0; i + 3 < l.pts.length; i += 2) {
+        const ax = l.pts[i], az = l.pts[i + 1], bx = l.pts[i + 2], bz = l.pts[i + 3];
+        const len = Math.hypot(bx - ax, bz - az);
+        for (let d = 2; d < len - 1; d += 6) {
+          const x = ax + ((bx - ax) * d) / len, z = az + ((bz - az) * d) / len;
+          const nr = index.nearest(x, z, 70);
+          if (nr.index < 0 || nr.dist < hw + 1.2) continue;
+          let best = 1e9, tx = 0, tz = 0;
+          for (let k = 0; k < tracks.length; k += 2) {
+            const dd = Math.hypot(tracks[k] - x, tracks[k + 1] - z);
+            if (dd < best) { best = dd; tx = tracks[k]; tz = tracks[k + 1]; }
+          }
+          if (best > 14) continue;
+          const y = this.groundAt(x, z);
+          if (!Number.isFinite(y)) continue;
+          // facing the track: the figures face -Z, so turn -Z onto the way to the track
+          this.stopSpots.push({ x, z, y, s: nr.index * route.step, h: route.heading[nr.index], side: 1, face: Math.atan2(-(tx - x), -(tz - z)) });
+        }
+      }
+    }
+    this.stopSpots.sort((a, b) => a.s - b.s);
+  }
+
+  /** Mapped cycle paths (OSM highway=cycleway) beside the carriageway: long enough to ride, never entering the road. */
+  private cycleTracks(route: Route, index: RouteIndex, osm: OsmWorld) {
+    const hw = this.halfWidth;
+    for (const l of osm.roads) {
+      if (l.kind !== 'cycleway' || l.pts.length < 6) continue;
+      const n = l.pts.length / 2;
+      const cum = new Float32Array(n);
+      let ok = true;
+      for (let i = 0; i < n; i++) {
+        if (i) cum[i] = cum[i - 1] + Math.hypot(l.pts[i * 2] - l.pts[i * 2 - 2], l.pts[i * 2 + 1] - l.pts[i * 2 - 1]);
+        if (index.nearest(l.pts[i * 2], l.pts[i * 2 + 1], hw + 0.6).index >= 0) { ok = false; break; }
+      }
+      if (!ok || cum[n - 1] < 35) continue;
+      const m = Math.floor(n / 2) * 2;
+      const nr = index.nearest(l.pts[m], l.pts[m + 1], 60);
+      if (nr.index < 0) continue;
+      this.cycleLines.push({ pts: l.pts, cum, len: cum[n - 1], s: nr.index * route.step });
     }
   }
 
@@ -549,104 +804,111 @@ export class Life extends WorldGroup {
   }
 
   /**
-   * Central Park's drives are closed to cars: runners (alone, in pairs and trios), walkers, dog walkers and
+   * Central Park's drives are closed to cars: runners (alone, in pairs, trios and club packs), walkers, dog walkers and
    * parents with pushchairs keep to the lane on the inside of the loop; people sit on the benches and stand
    * about on the lawns; pedicabs and cyclists share the drive; the footpaths beside it are busy too.
+   * Who stands where is dealt out from the rider's position (jog, gather, sit), so no two starts show the same scene.
    */
   private async buildPark(route: Route, index: RouteIndex, osm: OsmWorld, r: () => number) {
     const kit = await PersonKit.load();
     const acc = accessoryMaterial();
-    const person = (scale = 0.9 + r() * 0.18) => kit.rigged(Math.floor(r() * kit.count), scale);
+    const person = (run: boolean, sc = 0.93 + r() * 0.12) => kit.rigged(kit.look(run ? 'run' : 'walk', r), sc, run ? 'run' : 'walk');
     const DOGS: [string, string][] = [['#b8864b', '#5a3b1c'], ['#1c1b1b', '#0d0d0d'], ['#e6dfd0', '#a89b84'], ['#6b4a2f', '#2d1d10'], ['#9a9a96', '#4d4d4a']];
-    const STROLLERS = ['#243a5e', '#3d3f44', '#8a2f2a', '#2c5a47'];
-    // on the drive: groups of one to three, a dog walker, a parent with a pushchair
-    for (let i = 0; i < 56; i++) {
+    const STROLLERS = ['#243a5e', '#3d3f44', '#8a2f2a', '#2c5a47', '#c9a227', '#5a6b7a'];
+    // on the drive, by share: a lone runner, a pair, a trio, a club pack, a lone walker, walkers, a dog walker,
+    // a runner with a dog, a parent with a pushchair, a parent and child
+    type Kind = 'solo' | 'pair' | 'trio' | 'pack' | 'walker' | 'walkers' | 'dog' | 'rundog' | 'pram' | 'kid';
+    const KINDS: [number, Kind][] = [[0.3, 'solo'], [0.15, 'pair'], [0.05, 'trio'], [0.06, 'pack'], [0.13, 'walker'], [0.08, 'walkers'], [0.08, 'dog'], [0.05, 'rundog'], [0.05, 'pram'], [0.05, 'kid']];
+    for (let i = 0; i < 66; i++) {
       const g = new THREE.Group();
-      const kind = r();
+      let x = r(), kind: Kind = 'solo';
+      for (const [w, k] of KINDS) {
+        kind = k;
+        if ((x -= w) < 0) break;
+      }
       const people: Person[] = [];
-      let run = r() < 0.7;
+      let run = kind === 'solo' || kind === 'pair' || kind === 'trio' || kind === 'pack' || kind === 'rundog' || (kind === 'pram' && r() < 0.25);
       let dog: THREE.Object3D | undefined;
-      const put = (x: number, z: number, sc?: number) => {
-        const p = person(sc);
-        p.position.set(x, 0, z);
+      let inset = 1.3 + r() * 1.1;
+      const put = (px: number, pz: number, rn = run, sc?: number) => {
+        const p = person(rn, sc);
+        p.position.set(px, 0, pz);
         g.add(p);
         people.push(p);
       };
-      if (kind < 0.42) put(0, 0);
-      else if (kind < 0.66) {
-        put(-0.5, 0);
-        put(0.5, 0.1);
-      } else if (kind < 0.76) {
-        put(-0.55, 0);
-        put(0.5, 0.35);
-        put(0, -0.9);
-      } else if (kind < 0.88) {
-        run = false;
-        put(0, 0);
+      const addDog = () => {
         const [coat, dark] = DOGS[Math.floor(r() * DOGS.length)];
         const d = new THREE.Mesh(dogGeometry(coat, dark), acc);
         d.position.set(1.0, 0, -0.5);
         d.scale.setScalar(0.8 + r() * 0.35);
         d.castShadow = true;
         g.add(d);
-        const leash = new THREE.Mesh(leashGeometry(new THREE.Vector3(0.22, 0.85, -0.2), new THREE.Vector3(0.98, 0.68, -0.8)), acc);
-        g.add(leash);
+        g.add(new THREE.Mesh(leashGeometry(new THREE.Vector3(0.22, 0.85, -0.2), new THREE.Vector3(0.98, 0.68, -0.8)), acc));
         dog = d;
-      } else {
-        run = r() < 0.25;
+      };
+      let speed = run ? 2.5 + r() * 1.2 : 1.1 + r() * 0.35;
+      if (kind === 'solo' || kind === 'walker') put(0, 0);
+      else if (kind === 'pair' || kind === 'walkers') {
+        put(-0.5, 0);
+        put(0.5, 0.1);
+      } else if (kind === 'trio') {
+        put(-0.55, 0);
+        put(0.5, 0.35);
+        put(0, -0.9);
+      } else if (kind === 'pack') {
+        // a running club: two abreast, in step, the lane's width
+        const n = 4 + Math.floor(r() * 3);
+        for (let k = 0; k < n; k++) put(k % 2 ? 0.55 : -0.55, Math.floor(k / 2) * 1.0 + (r() - 0.5) * 0.25);
+        inset = 1.9 + r() * 0.5;
+        speed = 3.0 + r() * 0.5;
+      } else if (kind === 'dog' || kind === 'rundog') {
+        put(0, 0);
+        addDog();
+      } else if (kind === 'pram') {
         put(0, 0);
         const s = new THREE.Mesh(strollerGeometry(STROLLERS[Math.floor(r() * STROLLERS.length)]), acc);
         s.position.set(0, 0, -0.85);
         s.castShadow = true;
         g.add(s);
+      } else {
+        // a parent and a child, the child trotting along
+        put(-0.3, 0, run);
+        put(0.35, 0.1, false, 0.6);
+        speed = 1.1 + r() * 0.2;
       }
       this.add(g);
       this.joggers.push({
-        obj: g, people, run, dog, s: r() * route.length, dir: r() < 0.7 ? 1 : -1,
-        speed: run ? 2.5 + r() * 1.2 : 1.1 + r() * 0.35,
-        lateral: this.halfWidth - 1.3 - r() * 1.1, phase: r() * 10, fresh: true,
+        obj: g, people, run, dog, s: r() * route.length, dir: r() < 0.7 ? 1 : -1, speed,
+        lateral: this.halfWidth - inset, phase: r() * 10, fresh: true, slot: 0,
       });
     }
-    // on the footpaths within sight of the drive
-    const paths = osm.roads.filter((l) => {
-      if (!['path', 'footway', 'pedestrian'].includes(l.kind) || l.pts.length < 6) return false;
+    // on the footpaths within sight of the drive, pooled around the rider like everyone else
+    for (const l of osm.roads) {
+      if (!['path', 'footway', 'pedestrian'].includes(l.kind) || l.pts.length < 6) continue;
       const m = Math.floor(l.pts.length / 4) * 2;
-      return index.nearest(l.pts[m], l.pts[m + 1], 160).index >= 0;
-    });
-    for (let i = 0; i < 46 && paths.length; i++) {
-      const l = paths[Math.floor(r() * paths.length)];
+      if (index.nearest(l.pts[m], l.pts[m + 1], 160).index >= 0) this.walkLines.push({ pts: l.pts, mx: l.pts[m], mz: l.pts[m + 1] });
+    }
+    for (let i = 0; i < 40 && this.walkLines.length; i++) {
       const run = r() < 0.25;
-      const p = person();
+      const p = person(run);
+      p.visible = false;
       this.add(p);
       this.walkers.push({
-        obj: p, rig: p, run, pts: l.pts, seg: Math.floor(r() * (l.pts.length / 2 - 1)), t: r(), dir: r() < 0.5 ? 1 : -1,
-        speed: run ? 2.4 + r() * 1.0 : 1.0 + r() * 0.5, phase: r() * 10,
+        obj: p, rig: p, run, pts: this.walkLines[0].pts, seg: 0, t: 0, dir: r() < 0.5 ? 1 : -1,
+        speed: run ? 2.4 + r() * 1.0 : 1.0 + r() * 0.5, phase: r() * 10, fresh: true,
       });
     }
     // sitting on the benches Props drew
     this.benches = parkBenches(route, this.halfWidth);
-    for (let i = 0; i < 26 && this.benches.length; i++) {
-      const p = person();
-      p.sit(0.05 + r() * 0.12);
+    for (let i = 0; i < 24 && this.benches.length; i++) {
+      const p = kit.seated(kit.look('walk', r), 0.94 + r() * 0.1, 'bench', 0.05 + r() * 0.12);
       p.visible = false;
       this.add(p);
       this.sitters.push({ obj: p, seat: -1 });
     }
     // standing about on the lawns: friends chatting, a parent with a child, someone looking at the view
     for (let i = 0; i < 18; i++) {
-      const g = new THREE.Group();
-      const n = 1 + Math.floor(r() * 3.4);
-      const rad = 0.55 + r() * 0.35;
-      const a0 = r() * Math.PI * 2;
-      for (let k = 0; k < n; k++) {
-        const kid = n > 1 && k === n - 1 && r() < 0.3;
-        const m = kit.standing(Math.floor(r() * kit.count), kid ? 0.62 : 0.9 + r() * 0.18);
-        const a = a0 + (k / n) * Math.PI * 2;
-        m.position.set(n === 1 ? 0 : Math.cos(a) * rad, 0, n === 1 ? 0 : Math.sin(a) * rad);
-        // facing the middle of the group
-        m.rotation.y = n === 1 ? 0 : Math.atan2(-Math.cos(a), -Math.sin(a)) + (r() - 0.5) * 0.7;
-        g.add(m);
-      }
+      const g = this.crowd(kit, 'walk', 1 + Math.floor(r() * 3.4), r, 0.3);
       g.visible = false;
       this.add(g);
       this.clusters.push({ obj: g, placed: false, s: 0 });
@@ -657,14 +919,13 @@ export class Life extends WorldGroup {
       const body = new THREE.Mesh(pedicabGeometry(['#d9b43a', '#c93a2c', '#2d6a9f', '#e8e4d8'][i], ['#1d1d1f', '#f1f1ee', '#2d4a3a', '#8a2f2a'][i]), acc);
       body.castShadow = true;
       g.add(body);
-      const rider = person(1);
+      const rider = kit.rigged(kit.look('walk', r), 1, 'pedal');
       rider.position.set(0, -0.02, -1.0);
       rider.torso.rotation.x = -0.25;
       g.add(rider);
       if (r() < 0.75) {
         for (const x of r() < 0.5 ? [-0.2, 0.2] : [0]) {
-          const pax = person(0.95);
-          pax.sit(0.05);
+          const pax = kit.seated(kit.look('walk', r), 0.95, 'bench', 0.05);
           pax.position.set(x, 0.66 - 0.82 * 0.95, 0.5);
           g.add(pax);
         }
@@ -673,12 +934,7 @@ export class Life extends WorldGroup {
       this.add(g);
       this.pedicabs.push({ obj: g, rider, s: 0, speed: 3 + r() * 1.2, phase: r() * 6, lateral: 1.3, on: false });
     }
-    for (let i = 0; i < 8; i++) {
-      const c = new Rider({ kit: KITS[i], accent: '#111214', bike: i % 2 ? '#e9e9e4' : '#1a1c1f' });
-      c.visible = false;
-      this.add(c);
-      this.cyclistPool.push(c);
-    }
+    this.makeCyclists(10, r);
   }
 
   /**
@@ -716,15 +972,15 @@ export class Life extends WorldGroup {
     this.sydneySpots(route, index, osm);
     // people on the pavements beside the road: runners, pairs, dog walkers, pushchairs; busier near the beaches
     const DOGS: [string, string][] = [['#b8864b', '#5a3b1c'], ['#1c1b1b', '#0d0d0d'], ['#e6dfd0', '#a89b84'], ['#6b4a2f', '#2d1d10']];
-    const person = (sc = 0.9 + r() * 0.18) => kit.rigged(Math.floor(r() * kit.count), sc);
-    for (let i = 0; i < 32; i++) {
+    const person = (run: boolean, sc = 0.93 + r() * 0.12) => kit.rigged(kit.look(run ? 'run' : r() < 0.8 ? 'beach' : 'walk', r), sc, run ? 'run' : 'walk');
+    for (let i = 0; i < 34; i++) {
       const g = new THREE.Group();
       const kind = r();
       const people: Person[] = [];
       let run = r() < 0.3;
       let dog: THREE.Object3D | undefined;
       const put = (x: number, z: number) => {
-        const q = person();
+        const q = person(run);
         q.position.set(x, 0, z);
         g.add(q);
         people.push(q);
@@ -755,38 +1011,26 @@ export class Life extends WorldGroup {
       this.add(g);
       this.joggers.push({
         obj: g, people, run, dog, s: 0, dir: r() < 0.5 ? 1 : -1, speed: run ? 2.5 + r() * 1.0 : 1.1 + r() * 0.35,
-        lateral: this.halfWidth + 0.9 + r() * 1.8, phase: r() * 10, fresh: true, side: r() < 0.5 ? 1 : -1,
+        lateral: this.halfWidth + 0.9 + r() * 1.8, phase: r() * 10, fresh: true, slot: 0, side: r() < 0.5 ? 1 : -1,
       });
     }
     // footpaths and promenades within sight of the route: the coastal walk, beach fronts, park paths
-    const paths = osm.roads.filter((l) => {
-      if (!['path', 'footway', 'pedestrian', 'cycleway', 'steps'].includes(l.kind) || l.pts.length < 6) return false;
+    for (const l of osm.roads) {
+      if (!['path', 'footway', 'pedestrian', 'cycleway', 'steps'].includes(l.kind) || l.pts.length < 6) continue;
       const m = Math.floor(l.pts.length / 4) * 2;
-      return index.nearest(l.pts[m], l.pts[m + 1], 140).index >= 0;
-    });
-    for (let i = 0; i < 40 && paths.length; i++) {
-      const l = paths[Math.floor(r() * paths.length)];
-      const run = r() < 0.3;
-      const p = person();
+      if (index.nearest(l.pts[m], l.pts[m + 1], 140).index >= 0) this.walkLines.push({ pts: l.pts, mx: l.pts[m], mz: l.pts[m + 1] });
+    }
+    for (let i = 0; i < 48 && this.walkLines.length; i++) {
+      const run = r() < 0.25;
+      const p = person(run);
+      p.visible = false;
       this.add(p);
       this.walkers.push({
-        obj: p, rig: p, run, pts: l.pts, seg: Math.floor(r() * (l.pts.length / 2 - 1)), t: r(), dir: r() < 0.5 ? 1 : -1,
-        speed: run ? 2.4 + r() * 1.0 : 1.0 + r() * 0.5, phase: r() * 10,
+        obj: p, rig: p, run, pts: this.walkLines[0].pts, seg: 0, t: 0, dir: r() < 0.5 ? 1 : -1,
+        speed: run ? 2.4 + r() * 1.0 : 1.0 + r() * 0.5, phase: r() * 10, fresh: true,
       });
     }
-    const group = (n: number, kids = 0.15) => {
-      const g = new THREE.Group();
-      const rad = 0.55 + r() * 0.35, a0 = r() * Math.PI * 2;
-      for (let k = 0; k < n; k++) {
-        const m = kit.standing(Math.floor(r() * kit.count), n > 1 && k === n - 1 && r() < kids ? 0.62 : 0.9 + r() * 0.18);
-        const a = a0 + (k / n) * Math.PI * 2;
-        m.position.set(n === 1 ? 0 : Math.cos(a) * rad, 0, n === 1 ? 0 : Math.sin(a) * rad);
-        // the figures face -Z: this turns them in towards the middle of the group
-        m.rotation.y = n === 1 ? 0 : Math.atan2(Math.cos(a), Math.sin(a)) + (r() - 0.5) * 0.7;
-        g.add(m);
-      }
-      return g;
-    };
+    const group = (n: number, kids = 0.15) => this.crowd(kit, 'beach', n, r, kids);
     /** People sitting on a rug or towel, facing in, the way a picnic or a beach group does. */
     const sitters = (n: number, colour: string, stripe: string) => {
       const g = new THREE.Group();
@@ -795,11 +1039,10 @@ export class Life extends WorldGroup {
       rug.rotation.y = Math.PI / 2;
       g.add(rug);
       for (let k = 0; k < n; k++) {
-        const q = person(0.88 + r() * 0.16);
-        q.sit(0.12 + r() * 0.1);
-        q.legL.rotation.x = q.legR.rotation.x = 1.3;
+        const sc = 0.9 + r() * 0.12;
+        const q = kit.seated(kit.look('beach', r), sc, 'ground', 0.05 + r() * 0.12);
         const a = (k / n) * Math.PI * 2 + r() * 0.5;
-        q.position.set(Math.cos(a) * 0.55, 0.2 - 0.9 * q.scale.y, Math.sin(a) * 0.55);
+        q.position.set(Math.cos(a) * 0.6, 0.2 - 0.9 * q.scale.y, Math.sin(a) * 0.6);
         q.rotation.y = Math.atan2(Math.cos(a), Math.sin(a));
         g.add(q);
       }
@@ -807,7 +1050,7 @@ export class Life extends WorldGroup {
     };
     const RUGS: [string, string][] = [['#d94f3d', '#f2efe6'], ['#2f7fc1', '#f2efe6'], ['#f2c14e', '#2f7fc1'], ['#e8e4d8', '#d94f3d'], ['#3a9d7c', '#f2efe6']];
     // groups standing about on lawns and the grass above the beaches, and picnics in the parks (gather)
-    for (let i = 0; i < 16; i++) {
+    for (let i = 0; i < 24; i++) {
       const g = group(1 + Math.floor(r() * 3.4));
       g.visible = false;
       this.add(g);
@@ -837,7 +1080,7 @@ export class Life extends WorldGroup {
     const BOARDS: [string, string][] = [['#f4f2ea', '#1b6fb5'], ['#f2c230', '#f4f2ea'], ['#1b6fb5', '#f4f2ea'], ['#e9632b', '#f4f2ea'], ['#f4f2ea', '#d94f3d']];
     for (let i = 0; i < 6; i++) {
       const g = new THREE.Group();
-      const q = kit.standing(Math.floor(r() * kit.count), 0.95 + r() * 0.1);
+      const q = kit.standing(kit.look('beach', r), 0.95 + r() * 0.1);
       g.add(q);
       const [bc, bs] = BOARDS[i % BOARDS.length];
       const board = new THREE.Mesh(surfboardGeometry(bc, bs), acc);
@@ -847,7 +1090,7 @@ export class Life extends WorldGroup {
       g.add(board);
       if (i % 2) {
         // a second surfer beside the first
-        const q2 = kit.standing(Math.floor(r() * kit.count), 0.95);
+        const q2 = kit.standing(kit.look('beach', r), 0.95);
         q2.position.set(-0.9, 0, 0.3);
         g.add(q2);
       }
@@ -855,12 +1098,7 @@ export class Life extends WorldGroup {
       this.add(g);
       this.surfers.push({ obj: g, placed: false, s: 0 });
     }
-    for (let i = 0; i < 8; i++) {
-      const c = new Rider({ kit: KITS[i], accent: '#111214', bike: i % 2 ? '#e9e9e4' : '#1a1c1f' });
-      c.visible = false;
-      this.add(c);
-      this.cyclistPool.push(c);
-    }
+    this.makeCyclists(8, r);
   }
 
   /**
@@ -1008,8 +1246,117 @@ export class Life extends WorldGroup {
       j.obj.position.set(x, y + 0.02 + Math.abs(Math.sin(j.phase)) * (j.run ? 0.05 : 0.025), z);
       const fx = Math.sin(p.heading) * j.dir, fz = -Math.cos(p.heading) * j.dir;
       j.obj.rotation.y = Math.atan2(-fx, -fz);
-      j.people.forEach((q, k) => q.gait(j.phase + k * 1.7, j.run));
+      const far = Math.abs(rel) > 100;
+      j.people.forEach((q, k) => {
+        q.setFar(far);
+        if (!far) q.gait(j.phase + k * 1.7, j.run);
+      });
       if (j.dog) j.dog.position.y = Math.abs(Math.sin(j.phase * 1.1)) * 0.04;
+    }
+  }
+
+  /**
+   * A start, or a jump along the route: everything pooled around the rider is dealt out again from a hash of where the
+   * rider is. The same spot always gets the same scene, different spots get different ones.
+   */
+  private reseed(route: Route, riderS: number) {
+    const bucket = Math.round(riderS / 30);
+    this.rand = rng((Math.imul(bucket + 1, 0x9e3779b1) ^ Math.imul(Math.round(route.length), 0x85ebca6b)) >>> 0);
+    for (const c of [...this.clusters, ...this.stops, ...this.parked, ...this.beachers, ...this.surfers]) {
+      c.placed = false;
+      c.spot = undefined;
+      c.s = 0;
+      c.obj.visible = false;
+    }
+    for (const st of this.sitters) {
+      st.seat = -1;
+      st.obj.visible = false;
+    }
+    this.seatTaken.clear();
+    for (const c of this.pedicabs) c.on = false;
+    for (const c of this.pathRiders) c.on = false;
+    for (const w of this.walkers) w.fresh = true;
+    for (const j of this.joggers) j.fresh = true;
+  }
+
+  /** Give every group on the drive a place in the view ahead: shuffled, then spread evenly (denser near the rider) so no stretch is empty and no kind is always first. */
+  private deal() {
+    const n = this.joggers.length, order = this.joggers.map((_, i) => i);
+    for (let i = n - 1; i > 0; i--) {
+      const k = Math.floor(this.rand() * (i + 1));
+      [order[i], order[k]] = [order[k], order[i]];
+    }
+    order.forEach((ji, idx) => {
+      this.joggers[ji].slot = -25 + ((idx + this.rand()) / n) ** 1.35 * 705;
+    });
+  }
+
+  /** A pedestrian who is new or out of sight goes onto a footway near the rider (half the time the nearest one). */
+  private relocate(w: Walker, rx: number, rz: number) {
+    w.fresh = false;
+    const near: number[] = [];
+    let nearest = -1, best = 1e9;
+    this.walkLines.forEach((l, i) => {
+      const d = Math.hypot(l.mx - rx, l.mz - rz);
+      if (d < 420) near.push(i);
+      if (d < best) { best = d; nearest = i; }
+    });
+    if (!near.length) {
+      w.obj.visible = false;
+      return;
+    }
+    const l = this.walkLines[this.rand() < 0.2 ? nearest : near[Math.floor(this.rand() * near.length)]];
+    w.pts = l.pts;
+    w.seg = Math.floor(this.rand() * (l.pts.length / 2 - 1));
+    w.t = this.rand();
+    w.dir = this.rand() < 0.5 ? 1 : -1;
+    const x = l.pts[w.seg * 2] + (l.pts[w.seg * 2 + 2] - l.pts[w.seg * 2]) * w.t, z = l.pts[w.seg * 2 + 1] + (l.pts[w.seg * 2 + 3] - l.pts[w.seg * 2 + 1]) * w.t;
+    const y = this.groundAt(x, z);
+    w.obj.position.set(x, Number.isFinite(y) ? y : 0, z);
+    w.obj.visible = Number.isFinite(y);
+  }
+
+  /** People waiting at the tram stops near the rider, standing on the platforms and facing the track. */
+  private waiting(route: Route, riderS: number, riderDir: 1 | -1) {
+    this.spotPlace(this.stops, this.stopSpots, route, riderS, riderDir, 15, 560, (c, sp) => {
+      c.obj.position.set(sp.x, sp.y, sp.z);
+      c.obj.rotation.y = sp.face ?? 0;
+    }, 1.8);
+  }
+
+  /** Cyclists on the mapped cycle paths: set down on a path in sight, ride it to its end, then somewhere else. */
+  private pathRide(dt: number, route: Route, riderS: number, riderDir: 1 | -1) {
+    if (!this.pathRiders.length) return;
+    const tmp = { x: 0, z: 0, dx: 0, dz: 0 };
+    for (const c of this.pathRiders) {
+      if (c.on) {
+        c.d += c.speed * c.dir * dt;
+        const rel = this.relOf(route, this.cycleLines[c.line].s, riderS, riderDir);
+        if (c.d < 0 || c.d > this.cycleLines[c.line].len || rel < -150 || rel > 650) c.on = false;
+      }
+      if (!c.on) {
+        c.obj.visible = false;
+        for (let tries = 0; tries < 14 && !c.on; tries++) {
+          const li = Math.floor(this.rand() * this.cycleLines.length), l = this.cycleLines[li];
+          const rel = this.relOf(route, l.s, riderS, riderDir);
+          if (rel < 10 || rel > 520) continue;
+          c.line = li;
+          c.dir = this.rand() < 0.5 ? 1 : -1;
+          c.d = l.len * (0.1 + 0.8 * this.rand());
+          c.speed = 4 + this.rand() * 2.5;
+          c.on = true;
+        }
+        if (!c.on) continue;
+      }
+      const l = this.cycleLines[c.line];
+      tramAt(l, Math.min(Math.max(c.d, 0), l.len - 0.01), tmp);
+      const y = this.groundAt(tmp.x, tmp.z);
+      if (!Number.isFinite(y)) { c.obj.visible = false; continue; }
+      const h = Math.atan2(tmp.dx * c.dir, -tmp.dz * c.dir);
+      c.obj.position.set(tmp.x, y + 0.02, tmp.z);
+      c.obj.rotation.set(0, Math.PI - h, 0, 'YXZ');
+      c.obj.visible = true;
+      c.obj.update(dt, c.speed, 80, 0.45, 0);
     }
   }
 
@@ -1033,7 +1380,7 @@ export class Life extends WorldGroup {
   }
 
   /** Hand the pool members that fell behind (or were never placed) a free spot between lo and hi metres ahead. */
-  private spotPlace(pool: Cluster[], spots: Spot[], route: Route, riderS: number, riderDir: 1 | -1, lo: number, hi: number, put: (c: Cluster, sp: Spot) => void) {
+  private spotPlace(pool: Cluster[], spots: Spot[], route: Route, riderS: number, riderDir: 1 | -1, lo: number, hi: number, put: (c: Cluster, sp: Spot) => void, power = 1.4) {
     if (!spots.length) return;
     const L = route.length;
     for (const c of pool) {
@@ -1045,7 +1392,7 @@ export class Life extends WorldGroup {
       }
       for (let tries = 0; tries < 5 && !c.placed; tries++) {
         const first = c.spot === undefined;
-        let s = riderS + (first ? 10 + this.rand() ** 1.4 * (hi - 10) : lo + this.rand() * (hi - lo)) * riderDir;
+        let s = riderS + (first ? 10 + this.rand() ** power * (hi - 10) : lo + this.rand() * (hi - lo)) * riderDir;
         if (route.loop) s = ((s % L) + L) % L;
         else if (s < 0 || s > L) continue;
         const k = Math.min(spots.length - 1, this.spotIndex(spots, s) + Math.floor(this.rand() * 4));
@@ -1065,13 +1412,13 @@ export class Life extends WorldGroup {
   /** Cars at the kerb in front of houses, facing the way traffic on their side of the road goes (the left). */
   private kerb(route: Route, riderS: number, riderDir: 1 | -1) {
     this.spotPlace(this.parked, this.parkSpots, route, riderS, riderDir, 20, 420, (c, sp) => {
-      // traffic keeps left: on the route's left side cars point along the route, on its right side against it
-      const facing = sp.side < 0 ? 1 : -1;
+      // cars stand in the direction of the traffic on their side: along the route on the side where it keeps to
+      const facing = sp.side * this.keep > 0 ? 1 : -1;
       const h = sp.h + (facing < 0 ? Math.PI : 0);
       const jit = (this.rand() - 0.5) * 2.4;
       c.obj.position.set(sp.x + Math.sin(sp.h) * jit, sp.y + 0.04, sp.z - Math.cos(sp.h) * jit);
       c.obj.rotation.set(0, -h + (this.rand() - 0.5) * 0.05, 0, 'YXZ');
-    });
+    }, this.streetLife ? 2 : 1.4);
   }
 
   /** Beachgoers and surfers on the sand within sight of the route. */
@@ -1090,15 +1437,15 @@ export class Life extends WorldGroup {
   /** People on a car-free drive: kept around the rider, the ones left behind come back in ahead. */
   private jog(dt: number, route: Route, riderS: number, riderDir: 1 | -1) {
     const L = route.length;
+    if (this.jumped) this.deal();
     for (const j of this.joggers) {
       j.s += j.speed * j.dir * dt;
       if (route.loop) j.s = ((j.s % L) + L) % L;
       let rel = (j.s - riderS) * riderDir;
       if (route.loop) rel = ((((rel + L / 2) % L) + L) % L) - L / 2;
       if (j.fresh || rel < -120 || rel > 700) {
-        // out of sight: step back in beyond the view ahead (at the start: anywhere along it)
-        // (at the start most of them near, so the first view is already busy)
-        j.s = riderS + (j.fresh ? 25 + this.rand() ** 1.8 * 665 : 450 + this.rand() * 240) * riderDir;
+        // out of sight: step back in beyond the view ahead (at the start: the slot dealt to it, spread over the view)
+        j.s = riderS + (j.fresh ? j.slot : 450 + this.rand() * 240) * riderDir;
         j.fresh = false;
         if (route.loop) j.s = ((j.s % L) + L) % L;
         else if (j.s < 0 || j.s > L) { j.obj.visible = false; continue; }
@@ -1114,7 +1461,11 @@ export class Life extends WorldGroup {
       );
       const fx = Math.sin(p.heading) * j.dir, fz = -Math.cos(p.heading) * j.dir;
       j.obj.rotation.y = Math.atan2(-fx, -fz);
-      j.people.forEach((q, k) => q.gait(j.phase + k * 1.7, j.run));
+      const far = Math.abs(rel) > 100;
+      j.people.forEach((q, k) => {
+        q.setFar(far);
+        if (!far) q.gait(j.phase + k * 1.7, j.run);
+      });
       if (j.dog) j.dog.position.y = Math.abs(Math.sin(j.phase * 1.1)) * 0.04;
     }
   }
@@ -1217,8 +1568,7 @@ export class Life extends WorldGroup {
       c.obj.position.set(p.x + Math.cos(h) * c.lateral, p.ele + 0.02, p.z + Math.sin(h) * c.lateral);
       c.obj.rotation.set(0, -h, 0);
       c.obj.visible = true;
-      c.rider.legL.rotation.x = 1.0 + Math.sin(c.phase) * 0.45;
-      c.rider.legR.rotation.x = 1.0 - Math.sin(c.phase) * 0.45;
+      c.rider.pedal(c.phase);
     }
   }
 
@@ -1303,7 +1653,12 @@ export class Life extends WorldGroup {
       b.obj.rotation.z = b.heel + Math.sin(time * 0.7 + b.obj.position.z * 0.01) * 0.03;
     }
     const route = this.route;
-    if (!route) return;
+    if (!route || this.pending) return;
+    let jump = Math.abs(riderS - this.lastS);
+    if (route.loop) jump = Math.min(jump, route.length - jump);
+    this.jumped = !(jump < 120);
+    this.lastS = riderS;
+    if (this.jumped && (this.carFree || this.busy)) this.reseed(route, riderS);
     // gliders: circle in thermals, drift with the wind, bank into the turn
     for (const g of this.gliders) {
       g.a += g.w * dt;
@@ -1342,7 +1697,12 @@ export class Life extends WorldGroup {
       b.wings[0].rotation.z = ang;
       b.wings[1].rotation.z = -ang;
     }
+    const rp = this.walkLines.length ? pointAt(route, riderS, this.tmpR) : null;
     for (const w of this.walkers) {
+      if (rp && (w.fresh || Math.hypot(w.obj.position.x - rp.x, w.obj.position.z - rp.z) > 520)) {
+        this.relocate(w, rp.x, rp.z);
+        if (!w.obj.visible) continue;
+      }
       const p = w.pts;
       const nseg = p.length / 2 - 1;
       const ax = p[w.seg * 2], az = p[w.seg * 2 + 1], bx = p[w.seg * 2 + 2], bz = p[w.seg * 2 + 3];
@@ -1363,7 +1723,9 @@ export class Life extends WorldGroup {
       if (w.rig) {
         w.phase += dt * w.speed * (w.run ? 3.0 : 4.2);
         w.obj.position.set(x, (Number.isFinite(y) ? y : w.obj.position.y) + Math.abs(Math.sin(w.phase)) * (w.run ? 0.05 : 0.025), z);
-        w.rig.gait(w.phase, !!w.run);
+        const far = rp !== null && Math.hypot(w.obj.position.x - rp.x, w.obj.position.z - rp.z) > 110;
+        w.rig.setFar(far);
+        if (!far) w.rig.gait(w.phase, !!w.run);
       } else {
         w.phase += dt * w.speed * 1.9;
         w.obj.position.set(x, (Number.isFinite(y) ? y : w.obj.position.y) + Math.abs(Math.sin(w.phase * Math.PI)) * 0.04, z);
@@ -1385,6 +1747,9 @@ export class Life extends WorldGroup {
     }
     if (this.streetLife) {
       this.gatherStreet(route, riderS, riderDir);
+      this.kerb(route, riderS, riderDir);
+      this.waiting(route, riderS, riderDir);
+      this.pathRide(dt, route, riderS, riderDir);
       if (this.trams.length) this.tram(dt, route, riderS, riderDir);
     }
     this.ride(dt, route, riderS, riderDir, riderSpeed);
@@ -1437,9 +1802,28 @@ export class Life extends WorldGroup {
 
   /** A one-way park loop: slower riders ahead to pass, now and then a faster one coming through on the left. */
   private parkRide(dt: number, route: Route, riderS: number, riderDir: 1 | -1, riderSpeed: number) {
-    const free = this.cyclistPool.filter((c) => !c.visible);
     const L = route.length;
     const wrap = (s: number) => (route.loop ? ((s % L) + L) % L : s);
+    if (this.jumped) {
+      // at a start or after a jump: riders already on the drive, a few to catch and one coming through
+      for (const c of this.cyclists) c.obj.visible = false;
+      this.cyclists.length = 0;
+      const pool = this.cyclistPool.filter((c) => !c.visible);
+      let d = 40 + this.rand() * 60;
+      for (let k = 0; k < 4 && pool.length > 1; k++, d += 50 + this.rand() * 80) {
+        const obj = pool.pop()!;
+        obj.visible = true;
+        this.cyclists.push({ obj, s: wrap(riderS + d * riderDir), dir: riderDir, speed: 4.5 + this.rand() * 3, lateral: 0.4 + this.rand() * 2.2, climbing: true });
+      }
+      const fast = pool.pop();
+      if (fast) {
+        fast.visible = true;
+        this.cyclists.push({ obj: fast, s: wrap(riderS + (6 + this.rand() * 16) * riderDir), dir: riderDir, speed: Math.max(riderSpeed + 2.5, 9) + this.rand() * 2, lateral: -1.6, climbing: false });
+      }
+      this.nextClimber = 9 + this.rand() * 16;
+      this.nextDescender = 20 + this.rand() * 30;
+    }
+    const free = this.cyclistPool.filter((c) => !c.visible);
     this.nextClimber -= dt;
     this.nextDescender -= dt;
     if (this.nextClimber < 0) {
@@ -1451,7 +1835,7 @@ export class Life extends WorldGroup {
       }
     }
     if (this.nextDescender < 0) {
-      this.nextDescender = 35 + this.rand() * 50;
+      this.nextDescender = 22 + this.rand() * 35;
       const obj = free.pop();
       if (obj) {
         obj.visible = true;
@@ -1479,8 +1863,9 @@ export class Life extends WorldGroup {
   }
 
   /**
-   * Sydney: traffic is already on the road at load, and again after any jump along the route (a capture, a restart):
-   * oncoming cars spread over the view ahead, one slow car in front of the rider, a cyclist each way.
+   * Sydney and the city streets: traffic is already on the road at load, and again after any jump along the route (a
+   * capture, a restart): oncoming vehicles spread over the view ahead, slower ones driving away in front of the
+   * rider, and in Sydney a cyclist each way.
    */
   private seedTraffic(route: Route, riderS: number, riderDir: 1 | -1) {
     for (const v of this.vehicles) v.obj.visible = false;
@@ -1497,81 +1882,82 @@ export class Life extends WorldGroup {
       const pool = this.cars.filter((c) => !c.visible);
       return pool.length ? pool[Math.floor(this.rand() * pool.length)] : null;
     };
-    let d = 40 + this.rand() * 40;
-    for (let i = 0; i < 5; i++, d += 85 + this.rand() * 110) {
+    const city = this.streetLife;
+    const lane = this.lane;
+    let d = 30 + this.rand() * 40;
+    for (let i = 0; i < (city ? 7 : 5); i++, d += (city ? 55 : 85) + this.rand() * (city ? 80 : 110)) {
       const obj = take(), s = at(d);
       if (!obj || !inRoute(s)) continue;
       obj.visible = true;
       const speed = this.coaches.has(obj) ? 7 + this.rand() * 2 : 11 + this.rand() * 5;
-      this.vehicles.push({ obj, s, dir: (-riderDir) as 1 | -1, speed, lateral: 1.6, targetLateral: 1.6, overtaking: false });
+      this.vehicles.push({ obj, s, dir: (-riderDir) as 1 | -1, speed, lateral: lane, targetLateral: lane, overtaking: false });
     }
-    // one car driving away ahead in the rider's direction (a touch faster than a rider, which shares its lane)
-    const obj = take(), s = at(130 + this.rand() * 90);
-    if (obj && inRoute(s)) {
+    // vehicles driving away ahead in the rider's direction (a touch faster than a rider, which shares its lane)
+    const ahead = city ? [26 + this.rand() * 30, 110 + this.rand() * 80, 250 + this.rand() * 120] : [130 + this.rand() * 90];
+    for (const dd of ahead) {
+      const obj = take(), s = at(dd);
+      if (!obj || !inRoute(s)) continue;
       obj.visible = true;
-      this.vehicles.push({ obj, s, dir: riderDir, speed: 9 + this.rand() * 2, lateral: 1.6, targetLateral: 1.6, overtaking: false });
+      this.vehicles.push({ obj, s, dir: riderDir, speed: 9 + this.rand() * 2, lateral: lane, targetLateral: lane, overtaking: false });
     }
-    const free = this.cyclistPool.filter((c) => !c.visible);
-    const down = free.pop(), up = free.pop();
-    if (down && inRoute(at(260))) {
-      down.visible = true;
-      this.cyclists.push({ obj: down, s: at(260), dir: (-riderDir) as 1 | -1, speed: 9 + this.rand() * 3, lateral: 1.4 + this.rand() * 0.6, climbing: false });
-    }
-    if (up && inRoute(at(90))) {
-      up.visible = true;
-      this.cyclists.push({ obj: up, s: at(90), dir: riderDir, speed: 3.4 + this.rand(), lateral: 2.3, climbing: true });
+    if (this.suburb) {
+      const free = this.cyclistPool.filter((c) => !c.visible);
+      const down = free.pop(), up = free.pop();
+      if (down && inRoute(at(260))) {
+        down.visible = true;
+        this.cyclists.push({ obj: down, s: at(260), dir: (-riderDir) as 1 | -1, speed: 9 + this.rand() * 3, lateral: 1.4 + this.rand() * 0.6, climbing: false });
+      }
+      if (up && inRoute(at(90))) {
+        up.visible = true;
+        this.cyclists.push({ obj: up, s: at(90), dir: riderDir, speed: 3.4 + this.rand(), lateral: 2.3, climbing: true });
+      }
     }
     this.nextOncoming = 4 + this.rand() * 6;
     this.nextOvertake = 20 + this.rand() * 25;
   }
 
   private traffic(dt: number, route: Route, riderS: number, riderDir: 1 | -1, riderSpeed: number, _time: number) {
-    if (this.suburb) {
-      let jump = Math.abs(riderS - this.lastS);
-      if (route.loop) jump = Math.min(jump, route.length - jump);
-      if (!(jump < 120)) this.seedTraffic(route, riderS, riderDir);
-      this.lastS = riderS;
-    }
+    if (this.busy && this.jumped) this.seedTraffic(route, riderS, riderDir);
     const free = () => this.cars.filter((c) => !c.visible);
     this.nextOncoming -= dt;
     this.nextOvertake -= dt;
     const ahead = (d: number) => riderS + d * riderDir;
     const inRoute = (s: number) => route.loop || (s > 0 && s < route.length);
     if (this.nextOncoming < 0) {
-      // a suburb is busier: one every 4 to 10 s, appearing about 500 m out (they cross the view in under 25 s)
-      this.nextOncoming = this.suburb ? 4 + this.rand() * 6 : 20 + this.rand() * 45;
+      // a suburb or a city street is busier: one every 4 to 10 s, appearing about 500 m out (they cross the view in under 25 s)
+      this.nextOncoming = this.streetLife ? 2.5 + this.rand() * 4 : this.busy ? 4 + this.rand() * 6 : 20 + this.rand() * 45;
       const pool = free();
-      const s = ahead(this.suburb ? 450 + this.rand() * 150 : 650);
+      const s = ahead(this.busy ? 450 + this.rand() * 150 : 650);
       if (pool.length && inRoute(s)) {
         const obj = pool[Math.floor(this.rand() * pool.length)];
         obj.visible = true;
         const speed = this.coaches.has(obj) ? 7 + this.rand() * 2 : 11 + this.rand() * 5;
-        this.vehicles.push({ obj, s, dir: (-riderDir) as 1 | -1, speed, lateral: 1.6, targetLateral: 1.6, overtaking: false });
+        this.vehicles.push({ obj, s, dir: (-riderDir) as 1 | -1, speed, lateral: this.lane, targetLateral: this.lane, overtaking: false });
       }
     }
-    if (this.suburb) {
+    if (this.busy) {
       this.nextAhead -= dt;
       if (this.nextAhead < 0) {
         // a car driving away ahead of the rider now and then (never slower than the rider: it shares the rider's lane)
-        this.nextAhead = 22 + this.rand() * 25;
+        this.nextAhead = this.streetLife ? 7 + this.rand() * 9 : 22 + this.rand() * 25;
         const pool = free();
-        const s = ahead(160 + this.rand() * 120);
+        const s = ahead(this.streetLife ? 50 + this.rand() * 110 : 160 + this.rand() * 120);
         if (pool.length && inRoute(s)) {
           const obj = pool[Math.floor(this.rand() * pool.length)];
           obj.visible = true;
-          this.vehicles.push({ obj, s, dir: riderDir, speed: Math.max(riderSpeed + 2, 8) + this.rand() * 2, lateral: 1.6, targetLateral: 1.6, overtaking: false });
+          this.vehicles.push({ obj, s, dir: riderDir, speed: Math.max(riderSpeed + 2, 8) + this.rand() * 2, lateral: this.lane, targetLateral: this.lane, overtaking: false });
         }
       }
     }
     if (this.nextOvertake < 0) {
-      this.nextOvertake = this.suburb ? 30 + this.rand() * 40 : 50 + this.rand() * 70;
+      this.nextOvertake = this.busy ? 30 + this.rand() * 40 : 50 + this.rand() * 70;
       const pool = free();
       const s = ahead(-220);
-      const oncomingNear = this.vehicles.some((v) => v.dir !== riderDir && Math.abs(v.s - riderS) < (this.suburb ? 260 : 400));
+      const oncomingNear = this.vehicles.some((v) => v.dir !== riderDir && Math.abs(v.s - riderS) < (this.busy ? 260 : 400));
       if (pool.length && inRoute(s) && !oncomingNear) {
         const obj = pool[Math.floor(this.rand() * pool.length)];
         obj.visible = true;
-        this.vehicles.push({ obj, s, dir: riderDir, speed: Math.max(riderSpeed + 7, 12), lateral: 1.6, targetLateral: 1.6, overtaking: true });
+        this.vehicles.push({ obj, s, dir: riderDir, speed: Math.max(riderSpeed + 7, 12), lateral: this.lane, targetLateral: this.lane, overtaking: true });
       }
     }
     for (let i = this.vehicles.length - 1; i >= 0; i--) {
@@ -1581,7 +1967,7 @@ export class Life extends WorldGroup {
       const rel = (v.s - riderS) * riderDir;
       if (v.overtaking) {
         // pull out to pass, back in once well clear of the rider
-        v.targetLateral = rel > -25 && rel < 20 ? -1.6 : 1.6;
+        v.targetLateral = rel > -25 && rel < 20 ? -this.lane : this.lane;
       }
       v.lateral += (v.targetLateral - v.lateral) * (1 - Math.exp(-dt * 1.2));
       // a slow car the rider has left far behind is gone too

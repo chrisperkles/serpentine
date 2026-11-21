@@ -200,6 +200,7 @@ function addBuilding(
   bld: Building, b: Builder, heightAt: (x: number, z: number) => number, seed: number, ox: number, oz: number, style: Style,
 ) {
   if (style.vienna) return addViennaBlock(bld, b, heightAt, seed, ox, oz);
+  if (style.city && parkIndex && lowParkBuilding(bld)) return addParkBuilding(bld, b, heightAt, seed, ox, oz);
   if (style.city) return addManhattanBlock(bld, b, heightAt, seed, ox, oz);
   if (style.sydney) return addSydneyBuilding(bld, b, heightAt, seed, ox, oz);
   const med = style.med;
@@ -1060,6 +1061,82 @@ function hipRoof(b: Builder, ring: THREE.Vector2[], eave: number, pitch: number,
   return true;
 }
 
+
+// ---- Central Park's own buildings ----
+// The boathouse, the Dairy, the Chess and Checkers House, sheds and restrooms: rustic schist or red brick, a pitched
+// slate or green-painted roof with an overhang, a chimney, a porch along a long front. Not shops, not avenue blocks.
+const PARK_STONE = [srgb(0.5, 0.46, 0.4), srgb(0.44, 0.41, 0.36), srgb(0.56, 0.51, 0.44), srgb(0.47, 0.44, 0.41)];
+const PARK_BRICK = [srgb(0.52, 0.27, 0.2), srgb(0.46, 0.24, 0.18), srgb(0.58, 0.32, 0.24)];
+const PARK_ROOFS = [srgb(0.27, 0.29, 0.31), srgb(0.33, 0.35, 0.37), srgb(0.2, 0.36, 0.29), srgb(0.24, 0.4, 0.32)];
+
+/** A building inside the park: low, and near the drive (the avenue blocks stand 17 m and more, a hundred metres further out). */
+function lowParkBuilding(bld: Building): boolean {
+  return !bld.part && bld.minHeight === undefined && bld.height < 14 && !!parkIndex && parkIndex.nearest(bld.ring[0], bld.ring[1], 170).index >= 0;
+}
+
+function addParkBuilding(bld: Building, b: Builder, heightAt: (x: number, z: number) => number, seed: number, ox: number, oz: number) {
+  const ring = simplify(bld.ring);
+  if (ring.length < 3) return;
+  let gmin = Infinity, gmax = -Infinity;
+  for (const p of ring) {
+    const h = heightAt(p.x, p.y);
+    if (!Number.isFinite(h)) return;
+    gmin = Math.min(gmin, h);
+    gmax = Math.max(gmax, h);
+  }
+  const local = ring.map((p) => new THREE.Vector2(p.x - ox, p.y - oz));
+  let sa = 0;
+  for (const [i, p] of local.entries()) {
+    const q = local[(i + 1) % local.length];
+    sa += p.x * q.y - q.x * p.y;
+  }
+  if (Math.abs(sa) < 6) return;
+  const sgn = Math.sign(sa), area = Math.abs(sa) / 2;
+  const cen = ringCentroid(local);
+  const brick = rnd(seed + 3) < 0.4;
+  const wall = (brick ? PARK_BRICK : PARK_STONE)[Math.floor(rnd(seed + 5) * (brick ? PARK_BRICK : PARK_STONE).length)];
+  const roofCol = PARK_ROOFS[Math.floor(rnd(seed + 7) * PARK_ROOFS.length)];
+  const eaveH = Math.min(Math.max(bld.height * 0.7, 3.2), 5.2);
+  const bottom = gmin - 0.5, wallTop = gmax + eaveH;
+  b.setBase(gmax, wallTop);
+  b.setAux(0);
+  // a darker plinth at the foot, then the walls (two bands, so no two coplanar faces fight)
+  wallsAround(b, local, sgn, bottom, gmax + 0.7, wall.clone().multiplyScalar(0.72), TRIM);
+  wallsAround(b, local, sgn, gmax + 0.7, wallTop, wall, MASONRY);
+  // the roof overhangs the walls by about 0.7 m: the footprint scaled about its middle
+  const half = Math.max(2, Math.sqrt(area) / 2);
+  const eaves = local.map((p) => new THREE.Vector2(cen.x + (p.x - cen.x) * (1 + 0.75 / half), cen.y + (p.y - cen.y) * (1 + 0.75 / half)));
+  const roofCentre = new THREE.Vector3(cen.x, wallTop - 50, cen.y);
+  const pitch = 0.5 + rnd(seed + 11) * 0.12;
+  if (!hipRoof(b, eaves, wallTop - 0.1, pitch, roofCol, roofCentre)) deckOver(b, eaves, wallTop + 0.1, roofCol);
+  const ob = orientedBox(local);
+  const long = ob.u1 - ob.u0, wide = ob.v1 - ob.v0;
+  const at = (u: number, v: number) => new THREE.Vector2(ob.dir.x * u + ob.perp.x * v, ob.dir.y * u + ob.perp.y * v);
+  // a brick chimney on the roof
+  if (area > 40 && local.length <= 10) {
+    const c = at((ob.u0 + ob.u1) / 2 + (rnd(seed + 13) - 0.5) * long * 0.4, (ob.v0 + ob.v1) / 2 + (rnd(seed + 14) - 0.5) * wide * 0.2);
+    if (pointInRing(local, c.x, c.y)) b.box(c.x, c.y, ob.dir, 0.4, 0.4, wallTop, wallTop + Math.min(wide, 9) * 0.5 * pitch + 1.2, PARK_BRICK[0], TRIM);
+  }
+  // a porch along a long front: a stone platform, slim posts and a lean-to roof under the eave
+  if (long > 11 && wide < 16 && local.length <= 10) {
+    const side = rnd(seed + 17) < 0.5 ? 1 : -1;
+    const v0 = side > 0 ? ob.v1 : ob.v0;
+    const depth = 2.2;
+    const um = (ob.u0 + ob.u1) / 2, hu = long / 2 - 0.6;
+    const c = at(um, v0 + (side * depth) / 2);
+    const wood = srgb(0.9, 0.88, 0.8);
+    b.setBase(gmax, gmax + 3);
+    b.box(c.x, c.y, ob.dir, hu, depth / 2, bottom, gmax + 0.18, wall.clone().multiplyScalar(1.15), TRIM);
+    const n = Math.max(2, Math.round((2 * hu) / 2.4));
+    for (let k = 0; k <= n; k++) {
+      const p = at(um - hu + (k * 2 * hu) / n, v0 + side * (depth - 0.2));
+      b.box(p.x, p.y, ob.dir, 0.08, 0.08, gmax + 0.18, wallTop - 0.5, wood, TRIM);
+    }
+    const low = new THREE.Vector3(c.x, wallTop - 60, c.y);
+    const A = (u: number, v: number, y: number) => { const p = at(u, v); return new THREE.Vector3(p.x, y, p.y); };
+    b.quad(A(um - hu - 0.3, v0, wallTop - 0.3), A(um + hu + 0.3, v0, wallTop - 0.3), A(um + hu + 0.3, v0 + side * (depth + 0.4), wallTop - 0.95), A(um - hu - 0.3, v0 + side * (depth + 0.4), wallTop - 0.95), roofCol, ROOF, low);
+  }
+}
 
 // ---- Sydney's eastern suburbs ----
 // Red-brown and cream brick, terracotta tile roofs; 1960s walk-up flats in red and blond brick; Art Deco render.
@@ -2022,6 +2099,8 @@ function reachesRoad(ring: Float32Array, index: RouteIndex, clear: number): bool
 
 /** The route being built around (Sydney only): houses turn their verandahs to the street it runs along. */
 let sydneyStreet: RouteIndex | null = null;
+/** The park drive being built around (Central Park only): low buildings near it are park buildings, not avenue blocks. */
+let parkIndex: RouteIndex | null = null;
 
 export class Buildings extends WorldGroup {
   count = 0;
@@ -2043,6 +2122,7 @@ export class Buildings extends WorldGroup {
     const groups = new Map<string, { builder: Builder; ox: number; oz: number }>();
     const style = STYLES[biome.buildings] ?? STYLES.flachgau;
     sydneyStreet = style.sydney ? index : null;
+    parkIndex = biome.carFree ? index : null;
     const mat = facadeMaterial(style);
     osm.buildings.forEach((bld, i) => {
       const x = bld.ring[0];
