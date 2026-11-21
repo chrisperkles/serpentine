@@ -13,6 +13,11 @@ files:
   - "!**/node_modules/**/*"
   - "!dist-electron/*.map"
 asar: true
+# invite links from the group-ride relay: serpentine://join/<CODE>
+protocols:
+  - name: Serpentine group ride
+    schemes:
+      - serpentine
 afterPack: electron/after-pack.cjs
 mac:
   target:

@@ -7,6 +7,8 @@ import { FtpResult } from './FtpResult.tsx';
 import { download } from './download.ts';
 import { fmtTime, int, km, ZONE_HEX } from './format.ts';
 import { useCanvas } from './hooks.ts';
+import type { GroupRide } from '../net/group.ts';
+import { GroupResults } from './GroupHud.tsx';
 
 export interface SummaryData {
   record: RideRecord;
@@ -30,8 +32,11 @@ export function Summary({
   weight,
   onApplyFtp,
   onRetrySave,
+  group,
 }: {
   data: SummaryData;
+  /** The group of the ride just ended, still connected: results of those still riding arrive here. */
+  group?: GroupRide | null;
   backLabel: string;
   onBack: () => void;
   onAgain?: () => void;
@@ -80,6 +85,7 @@ export function Summary({
             {!pb && previousBest !== null && <span> — best is {fmtTime(previousBest)}</span>}
           </p>
         )}
+        {group && <GroupResults group={group} />}
         {record.rampFtp && onApplyFtp && (
           <FtpResult newFtp={record.rampFtp} oldFtp={record.ftp} weight={weight} onApply={() => onApplyFtp(record.rampFtp!)} />
         )}

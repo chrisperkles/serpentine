@@ -124,7 +124,7 @@ export class Engine {
   private botRiders: Rider[] = [];
   /** The others in a group ride, from the session each frame. */
   riders: RemoteRider[] = [];
-  private groupRiders = new Map<string, { rider: Rider; tag: NameTag; lat: number; text: string; drawnAt: number; lift: number }>();
+  private groupRiders = new Map<string, { rider: Rider; tag: NameTag; lat: number; text: string; drawnAt: number; lift: number; rideOnUntil: number }>();
   lateral = 1.7;
   /** Where the rider steers to; `lateral` eases towards it. */
   targetLateral = 1.7;
@@ -705,7 +705,7 @@ export class Engine {
         const tag = new NameTag(r.kit, 1.5);
         rider.add(tag.sprite);
         this.scene.add(rider);
-        g = { rider, tag, lat: GROUP_LANES[slot % GROUP_LANES.length], text: '', drawnAt: 0, lift: 0 };
+        g = { rider, tag, lat: GROUP_LANES[slot % GROUP_LANES.length], text: '', drawnAt: 0, lift: 0, rideOnUntil: 0 };
         this.groupRiders.set(r.id, g);
       }
       const i = slot++;
@@ -718,10 +718,14 @@ export class Engine {
       g.lat += (lane - g.lat) * (1 - Math.exp(-dt * 1.5));
       const s = r.s - back * r.dir;
       this.placeRider(g.rider, s, r.dir, route, g.lat);
+      // a rider just behind us is right in front of the chase camera: a body filling the screen hides the road
+      g.rider.visible = g.rider.position.distanceTo(this.camera.position) > 3.5;
       const grade = pointAt(route, s, tmp).grade * r.dir;
       g.rider.update(dt, r.speed, r.speed > 0.3 ? r.cadence : 0, Math.min(1.2, r.wkg / 4), grade);
-      const text = r.wkg > 0.05 ? `${r.name}  ${r.wkg.toFixed(1)}` : r.name;
-      if (text !== g.text && now - g.drawnAt > 1000) {
+      const thumbs = now < g.rideOnUntil;
+      const text = thumbs ? `\u{1F44D} ${r.name}` : r.wkg > 0.05 ? `${r.name}  ${r.wkg.toFixed(1)}` : r.name;
+      // a ride-on shows (and goes) at once; W/kg changes at most once a second
+      if (text !== g.text && (now - g.drawnAt > 1000 || thumbs !== g.text.startsWith('\u{1F44D}'))) {
         g.tag.draw(text);
         g.text = text;
         g.drawnAt = now;
@@ -754,6 +758,7 @@ export class Engine {
       })
       .sort((a, b) => a.d - b.d);
     for (const { g, at } of items) {
+      if (!g.rider.visible) continue;
       const tag = g.tag.sprite;
       const depth = -tagBase.copy(at).applyMatrix4(cam.matrixWorldInverse).z;
       const ndc = at.project(cam);
@@ -775,6 +780,12 @@ export class Engine {
       g.lift += (lift - g.lift) * (1 - Math.exp(-dt * 8));
       tag.position.y = TAG_Y + g.lift;
     }
+  }
+
+  /** A rider of the group sent a ride-on: a thumbs-up on their tag for a few seconds. */
+  rideOn(id: string) {
+    const g = this.groupRiders.get(id);
+    if (g) g.rideOnUntil = performance.now() + 4000;
   }
 
   private clearGroupRiders() {

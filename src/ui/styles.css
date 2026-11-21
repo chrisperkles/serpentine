@@ -3978,3 +3978,152 @@ a.btn {
   font-size: calc(18 * var(--u));
   color: var(--mist);
 }
+
+.group-lobby li.is-ready::after {
+  content: ' ✓';
+  color: var(--g0);
+}
+
+.ready-count {
+  align-self: center;
+  font-size: calc(22 * var(--u));
+  color: var(--label);
+  text-shadow: var(--shadow-text);
+}
+
+.o-actions kbd,
+.gp-rideon kbd {
+  font: inherit;
+  font-size: 0.8em;
+  opacity: 0.6;
+}
+
+.gp-note {
+  color: var(--g0);
+}
+
+.group-panel .gp-head {
+  display: flex;
+  align-items: baseline;
+  gap: calc(6 * var(--u));
+}
+
+.gp-rideon {
+  margin-left: auto;
+  border: 0;
+  border-radius: calc(8 * var(--u));
+  padding: calc(2 * var(--u)) calc(10 * var(--u));
+  background: rgba(238, 243, 244, 0.12);
+  color: var(--snow);
+  font-size: calc(20 * var(--u));
+  cursor: pointer;
+}
+
+.gp-place {
+  font-family: var(--cond);
+  font-weight: 700;
+  min-width: calc(22 * var(--u));
+  color: var(--signal);
+}
+
+.gp-foot.pull {
+  color: var(--g0);
+}
+
+.rideons {
+  position: absolute;
+  left: 50%;
+  top: calc(150 * var(--u));
+  transform: translateX(-50%);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: calc(8 * var(--u));
+}
+
+.rideon {
+  padding: calc(8 * var(--u)) calc(18 * var(--u));
+  border-radius: calc(12 * var(--u));
+  background: rgba(13, 27, 36, 0.72);
+  font-size: calc(28 * var(--u));
+  animation: rideon-in 0.35s ease-out;
+}
+
+.rideon.sent {
+  font-size: calc(22 * var(--u));
+  color: var(--label);
+}
+
+.ro-thumb {
+  margin-right: calc(8 * var(--u));
+}
+
+@keyframes rideon-in {
+  from {
+    opacity: 0;
+    transform: translateY(calc(-12 * var(--u))) scale(0.96);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .rideon {
+    animation: none;
+  }
+}
+
+.s-group {
+  margin: 24px 0;
+}
+
+.s-group table {
+  width: 100%;
+  border-collapse: collapse;
+  font-variant-numeric: tabular-nums;
+}
+
+.s-group th {
+  text-align: left;
+  font-weight: 500;
+  color: var(--mist);
+  font-size: 14px;
+  padding: 4px 10px 6px 0;
+}
+
+.s-group td {
+  padding: 8px 10px 8px 0;
+  border-top: 1px solid var(--line);
+}
+
+.s-group tr.me td {
+  color: var(--signal);
+}
+
+.s-group td.place {
+  font-family: var(--cond);
+  font-weight: 800;
+  font-size: 22px;
+  width: 2ch;
+}
+
+.s-group td.place.p1 {
+  color: #f2c230;
+}
+
+.s-group td.place.p2 {
+  color: #c9d2d6;
+}
+
+.s-group td.place.p3 {
+  color: #d08a4f;
+}
+
+.s-group .kit-dot {
+  width: 11px;
+  height: 11px;
+  margin-right: 8px;
+}
+
+.together-body .toggle span {
+  font-size: 14px;
+  color: var(--label, #c4d0d5);
+}

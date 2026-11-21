@@ -3,14 +3,15 @@
 // where they are, and the route, gone 15 minutes after the last rider leaves.
 
 import {
-  MAX_NAME, MAX_RIDERS, MAX_ROUTE_BYTES, MIN_POS_INTERVAL_MS, PROTOCOL,
-  type ClientMsg, type ErrorCode, type Member, type MemberInfo, type Pos, type RoomRoute, type ServerMsg,
+  DEFAULT_OPTIONS, MAX_NAME, MAX_RIDERS, MAX_ROUTE_BYTES, MIN_POS_INTERVAL_MS, PROTOCOL,
+  type ClientMsg, type ErrorCode, type Member, type MemberInfo, type MemberResult, type Pos, type Result, type RoomInfo,
+  type RoomOptions, type RoomRoute, type ServerMsg,
 } from '../../src/net/protocol.ts';
 
 /** What the relay keeps on a socket (Cloudflare: its attachment, so it survives hibernation). */
 export interface ConnState {
   code: string;
-  member?: { info: MemberInfo; pos: Pos | null; joined: number; posAt: number };
+  member?: { info: MemberInfo; pos: Pos | null; joined: number; posAt: number; ready: boolean; rideonAt?: number; resultAt?: number };
   /** Replaced by a newer socket of the same rider, or closed: no longer in the room. */
   gone?: boolean;
 }
@@ -26,8 +27,11 @@ export interface RoomMeta {
   code: string;
   host: string;
   route: RoomRoute;
+  options: RoomOptions;
   startAt: number | null;
   created: number;
+  /** By rider id; kept when the rider leaves, so a late finisher still sees who was faster. */
+  results: Record<string, MemberResult>;
 }
 
 export interface RoomStore {
@@ -85,7 +89,27 @@ export class RoomCore {
     if (msg.t === 'hello') return this.hello(c, msg);
     const m = st.member;
     if (!m) return this.fail(c, 'bad');
-    if (msg.t === 'pos') {
+    if (msg.t === 'ready') {
+      c.setState({ ...st, member: { ...m, ready: !!msg.ready } });
+      this.broadcast({ t: 'ready', id: m.info.id, ready: !!msg.ready }, c);
+    } else if (msg.t === 'rideon') {
+      const now = this.now();
+      if (now - (m.rideonAt ?? 0) < 1500) return;
+      c.setState({ ...st, member: { ...m, rideonAt: now } });
+      const to = typeof msg.to === 'string' ? msg.to.slice(0, 40) : null;
+      this.broadcast({ t: 'rideon', from: m.info.id, to }, c);
+    } else if (msg.t === 'result') {
+      const now = this.now();
+      if (now - (m.resultAt ?? 0) < 1000) return;
+      const r = cleanResult(msg.result);
+      const meta = await this.store.getMeta();
+      if (!r || !meta) return;
+      c.setState({ ...st, member: { ...m, resultAt: now } });
+      const result: MemberResult = { ...r, id: m.info.id, name: m.info.name, kit: m.info.kit, weight: m.info.weight };
+      meta.results = { ...meta.results, [m.info.id]: result };
+      await this.store.putMeta(meta);
+      this.broadcast({ t: 'result', result }, c);
+    } else if (msg.t === 'pos') {
       const now = this.now();
       if (now - m.posAt < MIN_POS_INTERVAL_MS) return;
       const pos = cleanPos(msg.pos);
@@ -118,7 +142,7 @@ export class RoomCore {
       if (meta && others.length) return this.fail(c, 'taken');
       const route = cleanRoute(msg.create);
       if (!route) return this.fail(c, 'bad');
-      meta = { code: st.code, host: info.id, route, startAt: null, created: now };
+      meta = { code: st.code, host: info.id, route, options: cleanOptions(msg.options), startAt: null, created: now, results: {} };
       await this.store.putMeta(meta);
     } else if (!meta) return this.fail(c, 'no-room');
     if (others.length >= MAX_RIDERS) return this.fail(c, 'full');
@@ -131,11 +155,18 @@ export class RoomCore {
       meta.host = info.id;
       await this.store.putMeta(meta);
     }
-    const member = { info, pos: null, joined: old[0]?.state().member?.joined ?? now, posAt: 0 };
+    const prev = old[0]?.state().member;
+    const member = { info, pos: null, joined: prev?.joined ?? now, posAt: 0, ready: prev?.ready ?? false };
     c.setState({ ...st, member });
-    const members: Member[] = [...others, c].map((o) => ({ ...o.state().member!.info, pos: o.state().member!.pos }));
-    this.send(c, { t: 'room', code: meta.code, host: meta.host, route: meta.route, startAt: meta.startAt, now, members });
-    this.broadcast({ t: 'join', member: { ...info, pos: null } }, c);
+    const members: Member[] = [...others, c].map((o) => {
+      const x = o.state().member!;
+      return { ...x.info, pos: x.pos, ready: x.ready };
+    });
+    this.send(c, {
+      t: 'room', code: meta.code, host: meta.host, route: meta.route, options: meta.options ?? DEFAULT_OPTIONS, startAt: meta.startAt, now,
+      members, results: Object.values(meta.results ?? {}),
+    });
+    this.broadcast({ t: 'join', member: { ...info, pos: null, ready: member.ready } }, c);
   }
 
   async closed(c: Conn) {
@@ -155,6 +186,18 @@ export class RoomCore {
     }
     this.broadcast({ t: 'leave', id, host: meta.host });
     if (!left.length) await this.store.setAlarm(this.now() + EMPTY_ROOM_MS);
+  }
+
+  /** For the invite page: what the room is, without anyone's position. */
+  async info(): Promise<RoomInfo | null> {
+    const meta = await this.store.getMeta();
+    if (!meta) return null;
+    const riders = this.members();
+    const host = riders.find((c) => c.state().member!.info.id === meta.host)?.state().member!.info.name ?? '';
+    return {
+      code: meta.code, route: meta.route.data.name, host, riders: riders.length,
+      started: meta.startAt !== null && meta.startAt <= this.now(), mode: (meta.options ?? DEFAULT_OPTIONS).mode,
+    };
   }
 
   /** The empty-room timer: forget the room unless someone came back. */
@@ -197,6 +240,23 @@ function cleanPos(v: unknown): Pos | null {
   const p = v as Partial<Pos>;
   if (typeof p.p !== 'number' || !Number.isFinite(p.p)) return null;
   return { p: num(p.p, 0, 10_000_000), v: num(p.v, 0, 40), w: Math.round(num(p.w, 0, 3000)), c: Math.round(num(p.c, 0, 250)) };
+}
+
+function cleanOptions(v: unknown): RoomOptions {
+  const o = (v && typeof v === 'object' ? v : {}) as Partial<RoomOptions>;
+  const mode = o.mode === 'race' ? 'race' : 'ride';
+  // a race is everyone's own watts
+  return { mode, together: mode === 'ride' && !!o.together };
+}
+
+function cleanResult(v: unknown): Result | null {
+  if (!v || typeof v !== 'object') return null;
+  const r = v as Partial<Result>;
+  const finish = typeof r.finish === 'number' && Number.isFinite(r.finish) ? num(r.finish, 0, 86_400) : null;
+  return {
+    finish, time: num(r.time, 0, 86_400), distance: num(r.distance, 0, 1_000_000), gain: num(r.gain, 0, 50_000),
+    avgPower: num(r.avgPower, 0, 3000), done: !!r.done, late: !!r.late,
+  };
 }
 
 function cleanRoute(v: unknown): RoomRoute | null {

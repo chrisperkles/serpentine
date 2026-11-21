@@ -2,7 +2,8 @@
 
 import assert from 'node:assert/strict';
 import { EMPTY_ROOM_MS, RoomCore, type Conn, type ConnState, type RoomMeta } from '../relay/src/core.ts';
-import { MAX_RIDERS, PROTOCOL, normalizeCode, isCode, type ServerMsg } from '../src/net/protocol.ts';
+import { MAX_RIDERS, PROTOCOL, normalizeCode, isCode, inviteLink, type ServerMsg } from '../src/net/protocol.ts';
+import { invitePage } from '../relay/src/invite.ts';
 
 let now = 1_000_000;
 let meta: RoomMeta | undefined;
@@ -215,6 +216,74 @@ await test('a broken route or message is refused', async () => {
   const d = new FakeConn('LMNPQ');
   await room.message(d, '{not json');
   assert.deepEqual(d.last('error'), { t: 'error', code: 'bad' });
+});
+
+await test('a race: options kept, keep-together never on in a race', async () => {
+  meta = undefined;
+  open.length = 0;
+  const h = new FakeConn('RACES');
+  await say(h, { t: 'hello', v: PROTOCOL, me: me('rh', 'Chris'), create: route, options: { mode: 'race', together: true } });
+  assert.deepEqual(h.last('room')!.options, { mode: 'race', together: false });
+  const g = new FakeConn(h.state().code);
+  await say(g, { t: 'hello', v: PROTOCOL, me: me('rg', 'Max') });
+  assert.deepEqual(g.last('room')!.options, { mode: 'race', together: false });
+  // ready marks reach the others and a newcomer
+  await say(g, { t: 'ready', ready: true });
+  assert.deepEqual(h.last('ready'), { t: 'ready', id: 'rider-rg', ready: true });
+  const late = new FakeConn(h.state().code);
+  await say(late, { t: 'hello', v: PROTOCOL, me: me('rl', 'Late') });
+  assert.equal(late.last('room')!.members.find((m) => m.id === 'rider-rg')!.ready, true);
+  await room.closed(late);
+  open.splice(open.indexOf(late), 1);
+});
+
+await test('ride-ons go to the others, at most one each 1.5 s', async () => {
+  const [h, g] = open;
+  now += 5000;
+  await say(h, { t: 'rideon', to: 'rider-rg' });
+  assert.deepEqual(g.last('rideon'), { t: 'rideon', from: 'rider-rh', to: 'rider-rg' });
+  g.inbox = [];
+  now += 200;
+  await say(h, { t: 'rideon', to: null });
+  assert.equal(g.last('rideon'), undefined);
+  now += 1500;
+  await say(h, { t: 'rideon', to: null });
+  assert.deepEqual(g.last('rideon'), { t: 'rideon', from: 'rider-rh', to: null });
+});
+
+await test('results are shared, cleaned, kept after the rider leaves', async () => {
+  const [h, g] = open;
+  now += 2000;
+  await say(g, { t: 'result', result: { finish: 812.4, time: 815, distance: 9800, gain: 700, avgPower: 233, done: false, late: false } });
+  const r = h.last('result')!.result;
+  assert.equal(r.name, 'Max');
+  assert.equal(r.finish, 812.4);
+  await say(h, { t: 'result', result: { finish: 'fast', time: -3, distance: 9800, gain: 700, avgPower: 99999, done: true, late: false } });
+  const mine = g.last('result')!.result;
+  assert.equal(mine.finish, null);
+  assert.equal(mine.time, 0);
+  assert.equal(mine.avgPower, 3000);
+  await room.closed(g);
+  open.splice(open.indexOf(g), 1);
+  const back = new FakeConn(h.state().code);
+  await say(back, { t: 'hello', v: PROTOCOL, me: me('rz', 'Zoe') });
+  const results = back.last('room')!.results;
+  assert.deepEqual(results.map((x) => x.name).sort(), ['Chris', 'Max']);
+  await room.closed(back);
+  open.splice(open.indexOf(back), 1);
+});
+
+await test('the invite page: room facts, escaped names, a link that opens the app', async () => {
+  const info = await room.info();
+  assert.equal(info!.host, 'Chris');
+  assert.equal(info!.riders, 1);
+  assert.equal(info!.mode, 'race');
+  const page = invitePage('ABCDE', { ...info!, host: '<script>x</script>', route: 'A & B' });
+  assert.ok(page.includes('&lt;script&gt;x&lt;/script&gt; invites you to a race on A &amp; B'));
+  assert.ok(page.includes('serpentine://join/ABCDE'));
+  assert.ok(invitePage('ABCDE', null).includes('over'));
+  assert.equal(inviteLink('wss://relay.example.dev', 'ABCDE'), 'https://relay.example.dev/join/ABCDE');
+  assert.equal(normalizeCode('Ride with me: https://relay.example.dev/join/abcde'), 'ABCDE');
 });
 
 console.log(`${passed} relay tests passed`);

@@ -4,8 +4,9 @@
 
 import type { RouteData } from '../geo/route.ts';
 import {
-  MAX_NAME, POS_INTERVAL_MS, PROTOCOL, randomCode,
-  type ClientMsg, type ErrorCode, type Member, type MemberInfo, type Pos, type RoomRoute, type ServerMsg,
+  DEFAULT_OPTIONS, MAX_NAME, POS_INTERVAL_MS, PROTOCOL, inviteLink, randomCode,
+  type ClientMsg, type ErrorCode, type Member, type MemberInfo, type MemberResult, type Pos, type Result, type RoomOptions,
+  type RoomRoute, type ServerMsg,
 } from './protocol.ts';
 
 export const DEFAULT_RELAY = 'wss://serpentine-relay.skyline-media.workers.dev';
@@ -24,6 +25,7 @@ const MAX_COAST_S = 2;
 
 export interface Peer {
   info: MemberInfo;
+  ready: boolean;
   pos: Pos | null;
   /** performance.now() when `pos` arrived. */
   at: number;
@@ -47,6 +49,7 @@ export interface PeerView {
   cadence: number;
   stale: boolean;
   host: boolean;
+  ready: boolean;
 }
 
 const ERRORS: Record<ErrorCode, string> = {
@@ -70,7 +73,11 @@ export class GroupRide {
   readonly me: MemberInfo;
   readonly url: string;
   route: RoomRoute | null = null;
+  options: RoomOptions = DEFAULT_OPTIONS;
   host = '';
+  /** Everyone's results so far (ours too), by rider id. */
+  results = new Map<string, MemberResult>();
+  ready = false;
   /** Relay time (ms) the ride starts for everyone; null until the host starts it. */
   startAt: number | null = null;
   status: GroupStatus = 'connecting';
@@ -78,6 +85,7 @@ export class GroupRide {
 
   private ws: WebSocket | null = null;
   private listeners = new Set<() => void>();
+  private rideOnListeners = new Set<(from: PeerView, toMe: boolean) => void>();
   /** Relay clock minus ours, from the ping with the shortest round trip. */
   private offset = 0;
   private bestRtt = Infinity;
@@ -96,11 +104,11 @@ export class GroupRide {
   }
 
   /** A new room on the host's route; a code that happens to be in use gets another one. */
-  static async create(me: MemberInfo, route: RoomRoute, url = relayUrl()): Promise<GroupRide> {
+  static async create(me: MemberInfo, route: RoomRoute, options: RoomOptions = DEFAULT_OPTIONS, url = relayUrl()): Promise<GroupRide> {
     for (let i = 0; i < 5; i++) {
       const g = new GroupRide(url, randomCode(), me);
       try {
-        await g.connect(route);
+        await g.connect(route, options);
         return g;
       } catch (e) {
         if (!(e instanceof GroupError && e.code === 'taken')) throw e;
@@ -117,6 +125,15 @@ export class GroupRide {
 
   get isHost(): boolean {
     return this.host === this.me.id;
+  }
+
+  get race(): boolean {
+    return this.options.mode === 'race';
+  }
+
+  /** The link to send: a page on the relay that opens the app on this room. */
+  get invite(): string {
+    return inviteLink(this.url, this.code);
   }
 
   /** Relay time now, ms. */
@@ -143,7 +160,7 @@ export class GroupRide {
     for (const fn of this.listeners) fn();
   }
 
-  private connect(create?: RoomRoute): Promise<void> {
+  private connect(create?: RoomRoute, options?: RoomOptions): Promise<void> {
     return new Promise((resolve, reject) => {
       let settled = false;
       const done = (err?: Error) => {
@@ -159,7 +176,7 @@ export class GroupRide {
       }, 10_000);
       const ws = new WebSocket(`${this.url}/room/${this.code}`);
       this.ws = ws;
-      ws.onopen = () => this.send({ t: 'hello', v: PROTOCOL, me: this.me, create }, ws);
+      ws.onopen = () => this.send({ t: 'hello', v: PROTOCOL, me: this.me, create, options }, ws);
       ws.onmessage = (e) => {
         let m: ServerMsg;
         try {
@@ -170,6 +187,8 @@ export class GroupRide {
         if (m.t === 'error') return done(new GroupError(m.code));
         this.receive(m);
         if (m.t === 'room') {
+          // back after a lost connection: the relay forgot nothing but our ready mark
+          if (this.joined && this.ready) this.send({ t: 'ready', ready: true });
           this.joined = true;
           this.retries = 0;
           this.status = 'live';
@@ -216,8 +235,16 @@ export class GroupRide {
     switch (m.t) {
       case 'room': {
         this.route = m.route;
+        this.options = m.options ?? DEFAULT_OPTIONS;
         this.host = m.host;
         this.startAt = m.startAt;
+        const mine = this.results.get(this.me.id);
+        for (const r of m.results ?? []) this.results.set(r.id, r);
+        // a result sent while the connection was down
+        if (mine && !m.results?.some((r) => r.id === this.me.id)) {
+          const { id: _id, name: _n, kit: _k, weight: _w, ...result } = mine;
+          this.send({ t: 'result', result });
+        }
         // a first guess at the relay clock until a ping answers
         if (this.bestRtt === Infinity) this.offset = m.now - Date.now();
         const old = this.peers;
@@ -246,6 +273,19 @@ export class GroupRide {
       case 'start':
         this.startAt = m.startAt;
         break;
+      case 'ready': {
+        const p = this.peers.get(m.id);
+        if (p) p.ready = m.ready;
+        break;
+      }
+      case 'result':
+        this.results.set(m.result.id, m.result);
+        break;
+      case 'rideon': {
+        const from = this.view().find((p) => p.id === m.from);
+        if (from && (m.to === null || m.to === this.me.id)) for (const fn of this.rideOnListeners) fn(from, m.to === this.me.id);
+        return;
+      }
       case 'pong': {
         const rtt = Date.now() - m.at;
         if (rtt >= 0 && rtt < this.bestRtt) {
@@ -261,7 +301,7 @@ export class GroupRide {
   private peerFrom(m: Member, old: Peer | undefined, now: number): Peer {
     const info: MemberInfo = { id: m.id, name: m.name.slice(0, MAX_NAME), weight: m.weight, kit: m.kit, accent: m.accent, bike: m.bike };
     const pos = m.pos ?? old?.pos ?? null;
-    return { info, pos, at: m.pos ? now : (old?.at ?? now), shown: old?.shown ?? pos?.p ?? 0, err: 0 };
+    return { info, ready: m.ready ?? old?.ready ?? false, pos, at: m.pos ? now : (old?.at ?? now), shown: old?.shown ?? pos?.p ?? 0, err: 0 };
   }
 
   private ping() {
@@ -301,6 +341,29 @@ export class GroupRide {
     if (this.isHost && this.startAt === null) this.send({ t: 'start', delay });
   }
 
+  setReady(ready: boolean) {
+    this.ready = ready;
+    this.send({ t: 'ready', ready });
+    this.changed();
+  }
+
+  /** A thumbs-up: to one rider, or to everyone. */
+  rideOn(to: string | null) {
+    this.send({ t: 'rideon', to });
+  }
+
+  onRideOn(fn: (from: PeerView, toMe: boolean) => void): () => void {
+    this.rideOnListeners.add(fn);
+    return () => this.rideOnListeners.delete(fn);
+  }
+
+  /** Our result (at the finish, and when the ride ends): shared with the room, which keeps it. */
+  sendResult(r: Result) {
+    this.results.set(this.me.id, { ...r, id: this.me.id, name: this.me.name, kit: this.me.kit, weight: this.me.weight });
+    this.send({ t: 'result', result: r });
+    this.changed();
+  }
+
   /**
    * Where a rider is now: their last position, rolled on at their speed for the time it took to get here (half a
    * round trip) and since.
@@ -337,6 +400,7 @@ export class GroupRide {
       cadence: p.pos?.c ?? 0,
       stale: !p.pos || (now - p.at) / 1000 > STALE_S,
       host: p.info.id === this.host,
+      ready: p.ready,
     }));
   }
 
@@ -355,6 +419,7 @@ export class GroupRide {
     this.ws = null;
     ws?.close(1000, 'bye');
     this.listeners.clear();
+    this.rideOnListeners.clear();
   }
 
   routeData(): RouteData | null {

@@ -99,4 +99,44 @@ await t('the trainer gets the gradient of the climb', () => {
   assert.ok(Math.abs(last.params.grade - 2) < 0.3, `grade ${last.params.grade}`);
 });
 
+/** Two riders, simulated side by side as each other's peers: `a` at 300 W, `b` at 180 W. */
+function groupRide(together: boolean, seconds: number) {
+  const a = new RideSession({ route, workout: null, settings: { ...settings }, ghost: null, erg: false, holdWatts: null, gears: false }, fakeHub(300).hub);
+  const b = new RideSession({ route, workout: null, settings: { ...settings }, ghost: null, erg: false, holdWatts: null, gears: false }, fakeHub(180).hub);
+  const peer = (x: RideSession, id: string) => () => [
+    { id, name: id, kit: '#ffffff', accent: '#ffffff', bike: '#000000', weight: 75, p: x.progress, speed: x.moveSpeed, power: x.state.power, cadence: 88, stale: false, host: false, ready: true },
+  ];
+  a.setPeers(peer(b, 'b'), together);
+  b.setPeers(peer(a, 'a'), together);
+  a.begin();
+  b.begin();
+  for (let i = 0; i < seconds * 20; i++) {
+    a.tick(0.05);
+    b.tick(0.05);
+  }
+  return { a: a.state, b: b.state, gap: a.progress - b.progress };
+}
+
+await t('apart without keep-together: 300 W rides away from 180 W', () => {
+  const { gap } = groupRide(false, 600);
+  assert.ok(gap > 300, `gap ${gap}`);
+});
+
+await t('keep-together holds 300 W and 180 W in the draft; the watts are still each rider\'s', () => {
+  const { a, b, gap } = groupRide(true, 600);
+  assert.ok(Math.abs(gap) < 7, `gap ${gap}`);
+  assert.ok(a.groupPull < 0 && b.groupPull > 0, `pulls ${a.groupPull} ${b.groupPull}`);
+  assert.equal(a.power, 300);
+  assert.equal(b.power, 180);
+});
+
+await t('nobody is towed who does not pedal', () => {
+  const a = new RideSession({ route, workout: null, settings: { ...settings }, ghost: null, erg: false, holdWatts: null, gears: false }, fakeHub(0).hub);
+  a.setPeers(() => [{ id: 'x', name: 'x', kit: '#ffffff', accent: '#ffffff', bike: '#000000', weight: 75, p: 400, speed: 8, power: 250, cadence: 88, stale: false, host: false, ready: true }], true);
+  a.begin();
+  for (let i = 0; i < 200; i++) a.tick(0.05);
+  assert.equal(a.state.groupPull, 0);
+  assert.ok(a.state.distance < 1);
+});
+
 console.log(`${n} session tests passed`);

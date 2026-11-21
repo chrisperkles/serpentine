@@ -17,6 +17,7 @@ import {
 import { StravaSegments } from './StravaSegments.tsx';
 import { WorkoutDetail, WorkoutList } from './WorkoutLibrary.tsx';
 import { GroupDialog } from './GroupDialog.tsx';
+import type { RoomOptions } from '../../net/protocol.ts';
 
 export interface RideTabProps {
   routes: RouteEntry[];
@@ -35,7 +36,10 @@ export interface RideTabProps {
   set: <K extends keyof AppSettings>(k: K, v: AppSettings[K]) => void;
   onStart: () => void;
   /** Ride together: lead a group ride on this route (no code) or join one (its code). Resolves to an error or null. */
-  onGroup: (code: string | null) => Promise<string | null>;
+  onGroup: (code: string | null, options: RoomOptions) => Promise<string | null>;
+  /** A code from an invite link: Ride together opens with it and joins. */
+  invite: string | null;
+  onInviteTaken: () => void;
   onDevices: () => void;
   error: string | null;
   /** Shown above the route (the unfinished-ride card). */
@@ -357,9 +361,29 @@ function StartBar(p: RideTabProps) {
     p.mode === 'workout' && p.workout ? p.workout.name : p.mode === 'hold' ? `Holding ${p.settings.holdWatts} W` : 'Free ride';
   const blocked = p.mode === 'workout' && !p.workout;
   const [together, setTogether] = useState(false);
+  const [inviteCode, setInviteCode] = useState<string | undefined>();
+  const { invite, onInviteTaken } = p;
+  useEffect(() => {
+    if (!invite) return;
+    setInviteCode(invite);
+    setTogether(true);
+    onInviteTaken();
+  }, [invite, onInviteTaken]);
   return (
     <footer className="start-bar">
-      {together && <GroupDialog route={p.route} what={what} blocked={blocked} onGroup={p.onGroup} onClose={() => setTogether(false)} />}
+      {together && (
+        <GroupDialog
+          route={p.route}
+          what={what}
+          blocked={blocked}
+          onGroup={p.onGroup}
+          initialCode={inviteCode}
+          onClose={() => {
+            setTogether(false);
+            setInviteCode(undefined);
+          }}
+        />
+      )}
       <div className="ready">
         {battery !== null && <span className="warn-line">Battery {battery} %: plug in the charger before you ride. </span>}
         {trainer ? (

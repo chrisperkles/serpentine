@@ -259,6 +259,13 @@ symptom (what it looked like), cause, fix and where. Newest at the bottom of eac
   where they were (tau 0.5 s), which trails a moving target by speed × tau. Fix: draw them where dead reckoning puts
   them now (last position + speed × (time since + half a round trip)) and ease only the correction a new position
   makes. `scripts/e2e-group.mjs` checks both views against the real gap. Where: `src/net/group.ts` `reckon`, `tick`.
+- **Keep-together held 300 W and 180 W 24 m apart, out of the draft.** A pull of 0.12 m/s per metre beyond 3 m
+  balances a 1.9 m/s speed difference only far apart (2 × (3 + 1.9 / 0.24) m). Fix: 0.6 m/s per metre beyond 1.5 m
+  (about 6 m apart, closing in about 1.7 s, still slow against positions half a second old). Where: `session.ts`
+  `groupPull`, `scripts/test-session.ts`.
+- **The summary of a group ride showed no results.** `end()` set the summary's group while the screen was still
+  "ride", so the effect that leaves the group once the summary is gone left it at once. Fix: set the group in the same
+  render as the summary screen. Where: `App.tsx` `end`.
 - **Below 10 fps the ride ran in slow motion, and a hidden tab stopped it.** Drawn frames drove the ride and a frame
   counted 0.1 s at most. Fix: the ride runs on the wall clock in steps of at most 50 ms, from the render loop and
   from a 250 ms timer while frames don't come; a gap of more than 65 s (a Mac that slept) counts as 65 s. Capture

@@ -22,7 +22,7 @@ import { clearUnfinished, loadUnfinished, saveUnfinished, type UnfinishedRide } 
 import { loadQueue, NEXT_COUNTDOWN, saveQueue, type QueuedRoute } from '../sim/queue.ts';
 import { LIBRARY } from '../workouts/index.ts';
 import { GroupError, GroupRide, newRiderId } from '../net/group.ts';
-import type { MemberInfo } from '../net/protocol.ts';
+import type { MemberInfo, Result } from '../net/protocol.ts';
 import { fmtTime } from './format.ts';
 import { Home, type GroupRequest, type HomeTab, type StartRequest } from './Home.tsx';
 import { needsPick, takeOpenSettings } from '../sim/profiles.ts';
@@ -57,6 +57,12 @@ interface Ride {
   groupStart: { late: boolean; nearGroup: boolean };
   /** Space, the A button: start (or, the host in a group's waiting room, start the countdown). */
   begin: () => void;
+  /** Our result for the group, as it stands. */
+  result: (done: boolean) => Result;
+}
+
+function ordinal(n: number): string {
+  return `${n}${n % 10 === 1 && n % 100 !== 11 ? 'st' : n % 10 === 2 && n % 100 !== 12 ? 'nd' : n % 10 === 3 && n % 100 !== 13 ? 'rd' : 'th'}`;
 }
 
 /** Seconds of countdown when the host starts a group ride. */
@@ -81,6 +87,10 @@ export function App() {
   const [progress, setProgress] = useState<LoadProgress | null>(null);
   const [ride, setRide] = useState<Ride | null>(null);
   const [summary, setSummary] = useState<SummaryData | null>(null);
+  /** The group of the ride just ended: still connected on the summary, so results of those still riding come in. */
+  const [summaryGroup, setSummaryGroup] = useState<GroupRide | null>(null);
+  /** A code from an invite link (Mac app) or ?join=<CODE>: Home opens Ride together with it once it is on screen. */
+  const [invite, setInvite] = useState<string | null>(() => new URLSearchParams(location.search).get('join'));
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [unfinished, setUnfinished] = useState<UnfinishedRide | null>(null);
@@ -138,6 +148,27 @@ export function App() {
   useEffect(() => {
     engine?.setQuality(settings.quality);
   }, [engine, settings.quality]);
+
+  // invite links in the Mac app: the one that opened it, then any while it runs
+  useEffect(() => {
+    const bridge = (window as unknown as { serpentineApp?: { takeInvite?: () => string | null; onInvite?: (fn: (code: string) => void) => void } })
+      .serpentineApp;
+    const first = bridge?.takeInvite?.();
+    if (first) setInvite(first);
+    bridge?.onInvite?.((code) => {
+      setInvite(code);
+      // from the summary straight to Home; mid-ride it waits until the ride ends
+      setScreen((s) => (s === 'summary' || s === 'detail' ? 'home' : s));
+      setHomeTab('ride');
+    });
+  }, []);
+
+  // leaving the summary leaves the group
+  useEffect(() => {
+    if (screen === 'summary' || !summaryGroup) return;
+    summaryGroup.leave();
+    setSummaryGroup(null);
+  }, [screen, summaryGroup]);
 
   useEffect(() => {
     engine?.setFrameCap(settings.frameRate);
@@ -374,8 +405,29 @@ export function App() {
       );
       if (resume) session.resume(resume.snapshot);
       else if (opts?.at) session.jump(opts.at);
-      if (group) session.setPeers(() => group.view());
-      const groupStart = { late: !!group && group.started, nearGroup: true };
+      if (group) session.setPeers(() => group.view(), group.options.together);
+      // a race has no lifts: a late rider starts at the start, unranked
+      const groupStart = { late: !!group && group.started, nearGroup: !group?.race };
+      // seconds to the end of the route (the top, or a lap): from the group's start in a race, our own clock otherwise
+      let finish: number | null = null;
+      const result = (done: boolean): Result => {
+        const st = session.state;
+        return { finish, time: st.elapsed, distance: st.distance, gain: st.gain, avgPower: st.avgPower, done, late: groupStart.late };
+      };
+      const finished = () => {
+        if (!group || finish !== null || session.state.status !== 'riding') return;
+        if (group.race && group.startAt === null) return;
+        finish = group.race ? (group.serverNow() - group.startAt!) / 1000 : session.state.elapsed;
+        group.sendResult(result(false));
+        if (!group.race || groupStart.late) return;
+        const faster = [...group.results.values()].filter((r) => r.id !== group.me.id && !r.late && r.finish !== null && r.finish < finish!);
+        const place = faster.length + 1;
+        session.announce(place === 1 ? 'You won the race' : `You finished ${ordinal(place)}`, `${fmtTime(finish)}${place > 1 ? `, ${fmtTime(finish - Math.min(...faster.map((r) => r.finish!)))} behind ${faster.reduce((a, b) => (b.finish! < a.finish! ? b : a)).name}` : ''}`, 9);
+      };
+      group?.onRideOn((from) => {
+        audio.rideOn();
+        engine.rideOn(from.id);
+      });
       (window as unknown as { __session: RideSession }).__session = session;
       let pedal = 0;
       let envT = 0;
@@ -388,6 +440,7 @@ export function App() {
         else if (e === 'lap' || e === 'ramp-done') audio.segmentEnd(true);
         // a group stays on its route
         else if (e === 'route-end' && !group) offerNext(session);
+        if (e === 'route-end') finished();
       });
       const go = () => {
         if (session.state.status !== 'ready') return;
@@ -399,9 +452,12 @@ export function App() {
         if (engine.rig.mode === 'cinematic') engine.setCameraMode('chase');
       };
       const begin = () => {
-        // the waiting room: the host's Space starts the countdown, the others wait for it
+        // the waiting room: the host's Space starts the countdown, the others' says they're ready
         if (group && !groupStart.late) {
-          if (group.startAt === null && group.isHost) group.start(GROUP_COUNTDOWN);
+          if (group.startAt === null) {
+            if (group.isHost) group.start(GROUP_COUNTDOWN);
+            else group.setReady(!group.ready);
+          }
           return;
         }
         go();
@@ -422,7 +478,7 @@ export function App() {
         if (group) {
           const st = session.state;
           const moving = st.status === 'riding';
-          group.update({ p: session.progress, v: moving ? st.speed : 0, w: moving ? st.power : 0, c: moving ? st.cadence : 0 });
+          group.update({ p: session.progress, v: moving ? session.moveSpeed : 0, w: moving ? st.power : 0, c: moving ? st.cadence : 0 });
         }
       });
       engine.setOnFrame((dt, live) => {
@@ -433,7 +489,7 @@ export function App() {
         if (next?.session === session && st.elapsed >= next.until) void goNext(next, req.holdWatts);
         engine.riderS = st.s;
         engine.riderDir = st.dir;
-        engine.riderSpeed = st.speed;
+        engine.riderSpeed = session.moveSpeed;
         engine.riderCadence = st.status === 'riding' ? st.cadence : 0;
         engine.riderEffort = st.power3s / cfg.ftp;
         engine.ghostS = st.ghostS;
@@ -474,6 +530,7 @@ export function App() {
         group,
         groupStart,
         begin,
+        result,
       });
       setScreen('ride');
       (window as unknown as { __ready: boolean }).__ready = true;
@@ -498,7 +555,7 @@ export function App() {
     try {
       if (g.kind === 'create') {
         const leadIn = settingsRef.current.leadIn && !!g.req.route.leadIn;
-        const group = await GroupRide.create(memberInfo(), { data: g.req.route, leadIn });
+        const group = await GroupRide.create(memberInfo(), { data: g.req.route, leadIn }, g.options);
         await start(g.req, { group, leadIn });
       } else {
         const group = await GroupRide.join(g.code, memberInfo());
@@ -565,7 +622,7 @@ export function App() {
 
   const end = async () => {
     if (!ride || !engine) return;
-    ride.group?.leave();
+    ride.group?.sendResult(ride.result(true));
     ride.session.setPeers(null);
     setUpNext(null);
     const rec = ride.session.finish();
@@ -579,6 +636,8 @@ export function App() {
     engine.unloadWorld();
     engine.paused = true;
     setRide(null);
+    // with the screen in the same render, or the effect below would see a group off the summary and leave it
+    setSummaryGroup(ride.group);
     setScreen('summary');
   };
 
@@ -612,12 +671,13 @@ export function App() {
     const q = new URLSearchParams(location.search);
     const id = q.get('ride');
     const code = q.get('group');
-    if (!id && !code) return;
+    // with ?join=<CODE> too, which opens Ride together on Home
     if (q.get('sim')) {
       hub.setSimulator(true);
       hub.simulator.setEffort(Number(q.get('watts') ?? 230));
       if (q.get('rpm')) hub.simulator.setCadence?.(Number(q.get('rpm')));
     }
+    if (!id && !code) return;
     if (q.get('time')) settingsRef.current = { ...settingsRef.current, time: q.get('time')! };
     if (q.get('bots')) settingsRef.current = { ...settingsRef.current, bots: q.get('bots')!.split(',').map(Number) };
     void (async () => {
@@ -630,7 +690,8 @@ export function App() {
       }
       const data = (await (await fetch(`/routes/${id}.json`)).json()) as RouteData;
       if (code === 'new') {
-        const err = await startGroup({ kind: 'create', req: { route: { ...data, source: 'brouter' }, workout, holdWatts: null } });
+        const options = { mode: q.get('race') ? ('race' as const) : ('ride' as const), together: q.get('together') === '1' };
+        const err = await startGroup({ kind: 'create', req: { route: { ...data, source: 'brouter' }, workout, holdWatts: null }, options });
         if (err) setError(err);
         return;
       }
@@ -688,6 +749,8 @@ export function App() {
             onSettings={updateSettings}
             onStart={(r) => void start(r)}
             onGroup={startGroup}
+            invite={invite}
+            onInviteTaken={() => setInvite(null)}
             tab={homeTab}
             onTab={setHomeTab}
             onOpenRide={(id) => void openRide(id)}
@@ -730,6 +793,7 @@ export function App() {
       {screen === 'summary' && summary && (
         <Summary
           data={summary}
+          group={summaryGroup}
           backLabel="Back to climbs"
           weight={settings.weight}
           onApplyFtp={(ftp) => updateSettings({ ...settingsRef.current, ftp })}

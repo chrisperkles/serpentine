@@ -621,6 +621,15 @@ export class RideAudio {
     tones.forEach((f, i) => this.partial(c, this.bus, f, t + i * 0.22, 0.5, critical ? 0.26 : 0.2, 'triangle', 0.005));
   }
 
+  /** A friend's thumbs-up: two quick rising plucks. */
+  rideOn() {
+    const c = this.ready();
+    if (!c) return;
+    const t = c.currentTime + 0.02;
+    this.partial(c, this.bus, 784, t, 0.18, 0.12, 'triangle', 0.003);
+    this.partial(c, this.bus, 1174.7, t + 0.09, 0.3, 0.14, 'triangle', 0.003);
+  }
+
   countdown() {
     const c = this.ready();
     if (!c) return;

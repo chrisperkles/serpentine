@@ -152,6 +152,11 @@ export interface LiveState {
   bots: BotState[];
   /** The others in a group ride. */
   riders: RemoteRider[];
+  /**
+   * Keep-together group ride: m/s added to (or, ahead of the group, taken from) the speed the watts give. The
+   * trainer still feels the road; only where you are on it follows the group.
+   */
+  groupPull: number;
   drafting: boolean;
   /** Estimated FTP once a ramp test ends. */
   rampFtp: number | null;
@@ -211,6 +216,8 @@ export class RideSession {
   private peers: (() => PeerView[]) | null = null;
   /** Group ride joined late: we started next to the group, this far along the route. */
   private progressOffset = 0;
+  /** Group ride with keep-together on. */
+  private together = false;
   readonly drivetrain: Drivetrain;
   /** Virtual gears of the selected drivetrain, easiest first. */
   readonly gears: Gear[];
@@ -243,6 +250,7 @@ export class RideSession {
       segment: null,
       bots: (cfg.bots ?? []).map((wkg) => ({ wkg, s: 0, dir: 1, speed: 0, distance: 0, gap: 0 })),
       riders: [],
+      groupPull: 0,
       drafting: false,
       rampFtp: null,
     };
@@ -319,10 +327,47 @@ export class RideSession {
     return this.st.distance + this.progressOffset;
   }
 
-  /** A group ride: the others, read every tick. */
-  setPeers(fn: (() => PeerView[]) | null) {
+  /** A group ride: the others, read every tick; `together` holds everyone to the group's pace. */
+  setPeers(fn: (() => PeerView[]) | null, together = false) {
     this.peers = fn;
-    if (!fn) this.st.riders = [];
+    this.together = !!fn && together;
+    if (!fn) {
+      this.st.riders = [];
+      this.st.groupPull = 0;
+    }
+  }
+
+  /** The speed we move at: the watts' speed, plus the group's pull. */
+  get moveSpeed(): number {
+    return this.st.speed + this.st.groupPull;
+  }
+
+  /** A banner from outside the ride (a race result). */
+  announce(text: string, sub: string | undefined, seconds: number) {
+    this.banner(text, sub, seconds);
+    this.emit();
+  }
+
+  /**
+   * Keep together: the group's middle is the median of everyone pedalling within 500 m, us included. Within 1.5 m
+   * of it nothing happens; further away the pull grows with the distance (0.6 m/s per metre, about 1.7 s to close a
+   * gap, slow enough for positions half a second old), up to a third of our speed. 300 W and 180 W on 4 % end up
+   * about 6 m apart: inside the draft. Not pedalling, nobody tows us.
+   */
+  private groupPull(v: number, power: number): number {
+    if (!this.together || v < 1 || power < 30) return 0;
+    const gaps = this.st.riders.filter((r) => !r.stale && r.speed > 1 && Math.abs(r.gap) < 500).map((r) => r.gap);
+    if (!gaps.length) return 0;
+    gaps.push(0);
+    gaps.sort((a, b) => a - b);
+    const n = gaps.length;
+    const middle = n % 2 ? gaps[(n - 1) / 2] : (gaps[n / 2 - 1] + gaps[n / 2]) / 2;
+    // how far we are ahead of the middle
+    const ahead = -middle;
+    const over = Math.abs(ahead) - 1.5;
+    if (over <= 0) return 0;
+    const cap = 0.35 * v + 0.5;
+    return Math.max(-cap, Math.min(cap, -Math.sign(ahead) * over * 0.6));
   }
 
   /**
@@ -477,9 +522,11 @@ export class RideSession {
     const vmax = cornerSpeed(p.radius);
     if (v > vmax) v = Math.max(vmax, v - 6 * dt);
     st.speed = v;
-    if (v > 0.3) st.movingTime += dt;
-    const mv = advance(route, st.s, st.dir, v * dt);
-    st.distance += v * dt;
+    st.groupPull = this.groupPull(v, power);
+    const move = v + st.groupPull;
+    if (move > 0.3) st.movingTime += dt;
+    const mv = advance(route, st.s, st.dir, move * dt);
+    st.distance += move * dt;
     if (route.loop) {
       st.s = mv.s;
       if (mv.enteredEnd) {
@@ -557,7 +604,7 @@ export class RideSession {
         lon: here.lon,
         alt: here.ele,
         distance: st.distance,
-        speed: st.speed,
+        speed: st.speed + st.groupPull,
         power: Math.round(power),
         cadence: Math.round(cadence),
         heartRate: st.heartRate ?? undefined,

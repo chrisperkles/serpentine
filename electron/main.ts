@@ -16,6 +16,27 @@ const DATA = process.env.SERPENTINE_DATA ?? join(homedir(), 'Documents', 'Serpen
 const SETTINGS = join(DATA, 'data', 'local-settings.json');
 
 if (process.env.SERPENTINE_USER_DATA) app.setPath('userData', process.env.SERPENTINE_USER_DATA);
+
+// Invite links: the relay's page opens serpentine://join/<CODE>. macOS hands it over with open-url, on a cold
+// start before the window exists; it waits here until the page takes it (invite:take), or goes straight to the
+// page when it is already open.
+let pendingInvite: string | null = null;
+let inviteTarget: BrowserWindow | null = null;
+function openInvite(url: string) {
+  const code = /^serpentine:\/\/join\/([A-Za-z0-9]{5})(?:[/?#]|$)/i.exec(url)?.[1]?.toUpperCase();
+  if (!code) return;
+  const w = inviteTarget;
+  if (w && !w.isDestroyed() && isAppUrl(w.webContents.getURL())) {
+    w.webContents.send('invite', code);
+    if (w.isMinimized()) w.restore();
+    w.focus();
+  } else pendingInvite = code;
+}
+app.on('open-url', (e, url) => {
+  e.preventDefault();
+  openInvite(url);
+});
+if (process.env.SERPENTINE_OPEN_URL) openInvite(process.env.SERPENTINE_OPEN_URL);
 // a trainer keeps riding while the window is behind another app
 app.commandLine.appendSwitch('disable-renderer-backgrounding');
 app.commandLine.appendSwitch('disable-background-timer-throttling');
@@ -237,6 +258,10 @@ function attachSettings() {
       log('settings backup failed', err);
     }
   });
+  ipcMain.on('invite:take', (e) => {
+    e.returnValue = fromApp(e) ? pendingInvite : null;
+    if (fromApp(e)) pendingInvite = null;
+  });
   // null tells the preload it is on someone else's page
   ipcMain.on('app:version', (e) => {
     e.returnValue = fromApp(e) ? app.getVersion() : null;
@@ -277,7 +302,10 @@ if (!app.requestSingleInstanceLock()) {
     }
 
     attachSettings();
+    // the packaged app's Info.plist claims serpentine:// (electron-builder.yml); a dev run must not take it over
+    if (app.isPackaged && !app.isDefaultProtocolClient('serpentine')) app.setAsDefaultProtocolClient('serpentine');
     win = createWindow();
+    inviteTarget = win;
     attachBluetooth(win, log);
     buildMenu(attachUpdates(win, log));
     await win.loadURL(`${ORIGIN}/`);

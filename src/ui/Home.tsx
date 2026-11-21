@@ -8,6 +8,7 @@ import {
 import { buildRampTest } from '../training/rampTest.ts';
 import { LIBRARY, parseZwo } from '../workouts/index.ts';
 import type { Workout } from '../workouts/types.ts';
+import type { RoomOptions } from '../net/protocol.ts';
 import { hub } from '../devices/index.ts';
 import { markWelcomed, needsPick, needsWelcome } from '../sim/profiles.ts';
 import type { QueuedRoute } from '../sim/queue.ts';
@@ -35,7 +36,7 @@ export interface StartRequest {
 
 /** A group ride to lead (on the chosen route) or to join by its code; the answer is an error to show, or null. */
 export type GroupRequest =
-  | { kind: 'create'; req: StartRequest }
+  | { kind: 'create'; req: StartRequest; options: RoomOptions }
   | { kind: 'join'; code: string; workout: Workout | null; holdWatts: number | null };
 
 function stored<T extends string>(key: string, fallback: T): T {
@@ -59,6 +60,8 @@ export function Home({
   onSettings,
   onStart,
   onGroup,
+  invite,
+  onInviteTaken,
   tab,
   onTab,
   onOpenRide,
@@ -70,6 +73,9 @@ export function Home({
   onSettings: (s: AppSettings) => void;
   onStart: (r: StartRequest) => void;
   onGroup: (g: GroupRequest) => Promise<string | null>;
+  /** A code from an invite link, to join. */
+  invite: string | null;
+  onInviteTaken: () => void;
   tab: HomeTab;
   onTab: (t: HomeTab) => void;
   onOpenRide: (id: string) => void;
@@ -216,13 +222,15 @@ export function Home({
                 holdWatts: mode === 'hold' ? settings.holdWatts : null,
               })
             }
-            onGroup={(code) => {
+            onGroup={(code, options) => {
               const workoutNow = mode === 'workout' ? workout : null;
               const holdWatts = mode === 'hold' ? settings.holdWatts : null;
               if (code) return onGroup({ kind: 'join', code, workout: workoutNow, holdWatts });
               if (!route) return Promise.resolve('Choose a route first.');
-              return onGroup({ kind: 'create', req: { route: route.data, workout: workoutNow, holdWatts } });
+              return onGroup({ kind: 'create', req: { route: route.data, workout: workoutNow, holdWatts }, options });
             }}
+            invite={invite}
+            onInviteTaken={onInviteTaken}
             onDevices={() => setDevicesOpen(true)}
             error={error}
             notice={notice}

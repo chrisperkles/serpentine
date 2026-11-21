@@ -47,6 +47,11 @@ if (version !== null) {
     btCancel: () => ipcRenderer.invoke('bt:cancel') as Promise<void>,
     btMine: (ids: string[]) => ipcRenderer.send('bt:mine', ids),
     btLog: (line: string) => ipcRenderer.send('bt:log', String(line)),
+    // invite links (serpentine://join/<CODE>): one that started the app, and those that come while it runs
+    takeInvite: () => ipcRenderer.sendSync('invite:take') as string | null,
+    onInvite: (fn: (code: string) => void) => {
+      ipcRenderer.on('invite', (_e, code: string) => fn(String(code)));
+    },
   });
   contextBridge.executeInMainWorld({ func: installBluetooth });
 }

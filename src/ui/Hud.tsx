@@ -11,7 +11,7 @@ import { useCanvas, useHub, useSession } from './hooks.ts';
 import { drawProfile } from './profile.ts';
 import { WorkoutChart } from './WorkoutChart.tsx';
 import type { GroupRide } from '../net/group.ts';
-import { GroupPanel, GroupStartOverlay } from './GroupHud.tsx';
+import { GroupPanel, GroupStartOverlay, RideOnToasts, rideOnTarget } from './GroupHud.tsx';
 
 export function Hud({
   session,
@@ -57,9 +57,18 @@ export function Hud({
   const [hidden, setHidden] = useState(false);
   const [confirmEnd, setConfirmEnd] = useState(false);
   // read by the key and button handlers, which are bound once per ride
-  const next = useRef({ upNext, onNextNow, onStay, onBegin });
-  next.current = { upNext, onNextNow, onStay, onBegin };
   const [nearGroup, setNearGroup] = useState(groupStart.nearGroup);
+  const [rideOnSent, setRideOnSent] = useState<{ to: string; at: number } | null>(null);
+  /** R, the panel's button, or Z on a Zwift Ride outside a workout: a thumbs-up to the nearest rider. */
+  const rideOn = () => {
+    if (!group || session.state.status === 'ready') return;
+    const target = rideOnTarget(session.state.riders);
+    group.rideOn(target?.id ?? null);
+    setRideOnSent({ to: target?.name ?? 'everyone', at: performance.now() });
+    setTimeout(() => setRideOnSent(null), 2600);
+  };
+  const next = useRef({ upNext, onNextNow, onStay, onBegin, rideOn });
+  next.current = { upNext, onNextNow, onStay, onBegin, rideOn };
 
   const profile = useMemo(() => {
     const dist = new Float32Array(route.n);
@@ -123,6 +132,9 @@ export function Hud({
           break;
         case 'h':
           setHidden((h) => !h);
+          break;
+        case 'r':
+          next.current.rideOn();
           break;
         case 'c': {
           const i = CAMERA_MODES.findIndex((m) => m.id === engine.rig.mode);
@@ -188,7 +200,9 @@ export function Hud({
           setHidden((h) => !h);
           break;
         case 'z':
-          session.skipInterval();
+          // in a group, outside a workout, Z is a ride-on
+          if (group && !(session.workout && s.workout && !s.workout.done)) next.current.rideOn();
+          else session.skipInterval();
           break;
       }
     });
@@ -344,7 +358,7 @@ export function Hud({
           </ul>
         )}
         {group && (st.status !== 'ready' || groupStart.late) && (
-          <GroupPanel group={group} st={st} myName={settings.name} kit={settings.kit} weight={settings.weight} />
+          <GroupPanel group={group} st={st} myName={settings.name} kit={settings.kit} weight={settings.weight} onRideOn={rideOn} />
         )}
         {st.drafting && <div className="drafting">In the draft</div>}
         {st.ghostGap !== null && ghostLabel && (
@@ -404,6 +418,7 @@ export function Hud({
           <span>← → steer</span>
           <span>↑ ↓ simulator watts</span>
           <span>H hide</span>
+          {group && <span>R ride on</span>}
           <button className="link" onClick={() => setConfirmEnd(true)}>
             End ride
           </button>
@@ -411,6 +426,7 @@ export function Hud({
       </div>
 
       {message && <div className="coach">{message}</div>}
+      {group && <RideOnToasts group={group} sent={rideOnSent} />}
       {st.banner && (
         <div className="banner" key={st.banner.text}>
           <span className="b-main">{st.banner.text}</span>

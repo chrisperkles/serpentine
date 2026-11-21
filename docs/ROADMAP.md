@@ -73,7 +73,9 @@ at a single athlete until it approves more), or keep "bring your own app" for se
   group, kits, name tags with W/kg, gaps, minimap dots and drafting. Details and how to run the relay:
   [multiplayer.md](multiplayer.md). Brought forward from 1.3 on Chris's "I need a multiplayer mode asap", with
   1.1's clock fix (from the island branch) in the same release.
-- Next: races with a finish and results, keep-together for different FTPs, group workouts, ride files as ghosts.
+- [x] Keep everyone together, invite links that open the app, ready marks, ride-ons, races with live places and a
+  finish, and everyone's results on the summary (Chris: "yeah go on, next 5", the same day).
+- Next: group workouts, quick messages, following a friend with the camera, ride files as ghosts.
 
 ## One world: Serpentine Island
 
