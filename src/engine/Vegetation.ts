@@ -6,11 +6,11 @@ import type { OsmWorld, Polygon } from '../geo/osm.ts';
 import type { Route, RouteIndex } from '../geo/route.ts';
 import { patchMaterial } from './atmosphere.ts';
 import { mergeColored } from './Road.ts';
-import { broadleafGeometry, eucalyptGeometry, figGeometry, norfolkPineGeometry, parkTreeGeometry, pineGeometry, preserveCoverage, spruceGeometry, treeAtlas, treeAtlasReady } from './treeModels.ts';
+import { broadleafGeometry, figGeometry, gumGeometry, norfolkPineGeometry, parkTreeGeometry, pineGeometry, preserveCoverage, spruceGeometry, treeAtlas, treeAtlasReady } from './treeModels.ts';
 import { ALPINE, type Biome } from './biome.ts';
 import { impostorGeometry, renderImpostorAtlas } from './impostors.ts';
 import { broadleafTint, coniferTint, dayOfYear, evergreenBroadTint, parkTint, pineTint, sydneyTint } from './season.ts';
-import { sydneyGround, sydneySpecies } from './sydneyTrees.ts';
+import { sydneyGround, sydneySpecies, type SydneyGround } from './sydneyTrees.ts';
 import { pointAt } from '../geo/route.ts';
 import type { BakedTrees } from '../geo/trees.ts';
 import { WorldGroup } from './dispose.ts';
@@ -172,8 +172,9 @@ export interface VegetationOptions {
 }
 
 // near-LOD variants: forest-grown (high crown base) and open/edge-grown (foliage to the ground)
-type Kind = 'spruceF' | 'spruceO' | 'beechF' | 'beechO';
-const KINDS: Kind[] = ['spruceF', 'spruceO', 'beechF', 'beechO'];
+// extraA and extraB are only used by Sydney (angophora and coastal banksia; the biomes before it have four shapes)
+type Kind = 'spruceF' | 'spruceO' | 'beechF' | 'beechO' | 'extraA' | 'extraB';
+const KINDS: Kind[] = ['spruceF', 'spruceO', 'beechF', 'beechO', 'extraA', 'extraB'];
 const STRIDE = 9; // x, y, z, width, height, rot, r, g, b
 
 export class Vegetation extends WorldGroup {
@@ -192,7 +193,7 @@ export class Vegetation extends WorldGroup {
     const add = (kind: Kind, x: number, y: number, z: number, w: number, h: number, rot: number, c: THREE.Color) => {
       const key = `${Math.floor(x / BUCKET)},${Math.floor(z / BUCKET)}`;
       let l = lists.get(key);
-      if (!l) lists.set(key, (l = { spruceF: [], spruceO: [], beechF: [], beechO: [] }));
+      if (!l) lists.set(key, (l = { spruceF: [], spruceO: [], beechF: [], beechO: [], extraA: [], extraB: [] }));
       l[kind].push(x, y, z, w, h, rot, c.r, c.g, c.b);
     };
 
@@ -202,13 +203,16 @@ export class Vegetation extends WorldGroup {
     const biome = o.biome ?? ALPINE;
     // Alpine: spruce + beech; Mediterranean: Aleppo pine + holm oak / wild olive
     // Park: the conifer slots carry plane (F) and elm (O), the broadleaf slots two oaks
-    // Sydney: Norfolk pine (F) and Moreton Bay fig (O) in the conifer slots, eucalypt (F) and a leafy street tree (O)
-    const near: Record<Kind, THREE.BufferGeometry> = biome.sydneyTrees
+    // Sydney: Norfolk pine (F) and Moreton Bay fig (O) in the conifer slots, a tall gum (F) and a leafy street tree (O),
+    // then an angophora (A) and a coastal banksia (B)
+    const near4: Record<'spruceF' | 'spruceO' | 'beechF' | 'beechO', THREE.BufferGeometry> & Partial<Record<Kind, THREE.BufferGeometry>> = biome.sydneyTrees
       ? {
         spruceF: norfolkPineGeometry(3),
         spruceO: figGeometry(5),
-        beechF: eucalyptGeometry(2, 0.4),
+        beechF: gumGeometry('tall', 2),
         beechO: broadleafGeometry(9, 0.3, 1.1),
+        extraA: gumGeometry('spread', 4),
+        extraB: gumGeometry('coastal', 6),
       }
       : biome.parkTrees
       ? {
@@ -230,15 +234,19 @@ export class Vegetation extends WorldGroup {
           beechF: broadleafGeometry(2, 0.44, 0.9),
           beechO: broadleafGeometry(9, 0.22, 1.2),
         };
+    const near: Record<Kind, THREE.BufferGeometry> = { extraA: near4.beechF, extraB: near4.beechF, ...near4 };
     // distant trees: impostor cards rendered from the near models (fallback: simple solids)
+    const cells = biome.sydneyTrees ? 6 : 4;
     const far: Record<Kind, THREE.BufferGeometry> = o.renderer
       ? {
-        spruceF: impostorGeometry(0, 4),
-        spruceO: impostorGeometry(1, 4),
-        beechF: impostorGeometry(2, 4),
-        beechO: impostorGeometry(3, 4),
+        spruceF: impostorGeometry(0, cells),
+        spruceO: impostorGeometry(1, cells),
+        beechF: impostorGeometry(2, cells),
+        beechO: impostorGeometry(3, cells),
+        extraA: impostorGeometry(4, cells),
+        extraB: impostorGeometry(5, cells),
       }
-      : { spruceF: coniferGeometry(1), spruceO: coniferGeometry(1), beechF: broadGeometry(1), beechO: broadGeometry(1) };
+      : { spruceF: coniferGeometry(1), spruceO: coniferGeometry(1), beechF: broadGeometry(1), beechO: broadGeometry(1), extraA: broadGeometry(1), extraB: broadGeometry(1) };
     const atlas = treeAtlas(biome.atlas);
     const nearMat = preserveCoverage(
       patchMaterial(new THREE.MeshLambertMaterial({ map: atlas, alphaTest: 0.5, side: THREE.DoubleSide, vertexColors: true }), {
@@ -277,7 +285,7 @@ export class Vegetation extends WorldGroup {
       const renderer = o.renderer;
       void treeAtlasReady(biome.atlas).then((tex) => {
         if (this.disposed) return;
-        farMat.map = renderImpostorAtlas(renderer, [near.spruceF, near.spruceO, near.beechF, near.beechO], tex);
+        farMat.map = renderImpostorAtlas(renderer, biome.sydneyTrees ? [near.spruceF, near.spruceO, near.beechF, near.beechO, near.extraA, near.extraB] : [near.spruceF, near.spruceO, near.beechF, near.beechO], tex);
         farMat.needsUpdate = true;
         blank.dispose();
       });
@@ -345,6 +353,9 @@ export class Vegetation extends WorldGroup {
       markRoad(mask, W, H, x0, z0, cell, road.pts, road.width / 2 + 0.8);
     }
     const sydney = o.biome?.sydneyTrees ? sydneyGround(route, osm, o.heightAt, o.corridor + 100) : null;
+    // Sydney: tall trees already standing, so the promenade pines added below keep their distance
+    const tallAt = new Map<number, number[]>();
+    const tkey = (x: number, z: number) => Math.floor(x / 10) * 100003 + Math.floor(z / 10);
     for (let i = 0; i < t.n; i++) {
       let x = t.x[i];
       let z = t.z[i];
@@ -371,14 +382,23 @@ export class Vegetation extends WorldGroup {
       const r1 = hash2(i, 17), r2 = hash2(i, 29);
       if (sydney) {
         const sp = sydneySpecies(sydney.seaDist(x, z), sydney.inPark(x, z), h, r1, hash2(i, 53));
-        sydneyTint(sp, r2, tint);
+        sydneyTint(sp, r2, tint, hash2(i, 61));
+        if (h >= 8) {
+          const k = tkey(x, z), l = tallAt.get(k);
+          if (l) l.push(x, z);
+          else tallAt.set(k, [x, z]);
+        }
         const cr = t.crown[i];
-        // crown radius in the model: pine 0.16, fig 0.47, gum 0.3, street tree 0.33 (see treeModels.ts)
+        // crown radius in the model: pine 0.16, fig 0.47, tall gum 0.3, street tree 0.33, angophora 0.46, coastal 0.36
+        // (see treeModels.ts); width and height vary on their own so no two verge trees are the same puff
         const jitter = 0.85 + hash2(i, 41) * 0.3;
+        const tall = 0.8 + hash2(i, 43) * 0.4;
         if (sp === 'pine') add('spruceF', x, y - 0.3, z, Math.min(Math.max(h * 0.2, 3.2), 7) / 0.16 * jitter, h, r1 * 6.283, tint);
         else if (sp === 'fig') add('spruceO', x, y - 0.3, z, Math.min(Math.max(cr, h * 0.4, 5), 16) / 0.47 * jitter, Math.min(h, 24), r1 * 6.283, tint);
-        else if (sp === 'gum') add(r2 < 0.3 ? 'beechO' : 'beechF', x, y - 0.3, z, Math.min(Math.max(cr, h * 0.22), h * 0.5) / 0.3 * jitter, h, r2 * 6.283, tint);
-        else add('beechO', x, y - 0.3, z, Math.min(Math.max(cr, h * 0.3), h * 0.55) / 0.33 * jitter, Math.min(h, 16), r2 * 6.283, tint);
+        else if (sp === 'gum') add('beechF', x, y - 0.3, z, Math.min(Math.max(cr, h * 0.22), h * 0.5) / 0.3 * jitter, h * tall, r2 * 6.283, tint);
+        else if (sp === 'angophora') add('extraA', x, y - 0.3, z, Math.min(Math.max(cr, h * 0.4), h * 0.75) / 0.46 * jitter, h * (0.75 + hash2(i, 47) * 0.3), r2 * 6.283, tint);
+        else if (sp === 'coastal') add('extraB', x, y - 0.3, z, Math.min(Math.max(cr, h * 0.35), h * 0.8) / 0.36 * (0.8 + hash2(i, 49) * 0.6), h * (0.7 + hash2(i, 43) * 0.5), r2 * 6.283, tint);
+        else add('beechO', x, y - 0.3, z, Math.min(Math.max(cr, h * 0.3), h * 0.55) / 0.33 * jitter, Math.min(h, 16) * tall, r2 * 6.283, tint);
         continue;
       }
       const park = o.biome?.parkTrees === true;
@@ -415,6 +435,72 @@ export class Vegetation extends WorldGroup {
         add(kind, x, y - 0.3, z, w, h, r2 * 6.283, tint);
       }
     }
+
+    if (sydney) this.promenadePines(route, index, osm, o, sydney, mask, W, H, x0, z0, cell, tallAt, tkey, add, tint);
+  }
+
+  /**
+   * Norfolk Island pines along the Bondi, Bronte and Coogee promenades. The canopy model finds few trees there, so
+   * rows are added along the boundaries of parks near the sea and beside the road where it runs along the beach.
+   */
+  private promenadePines(
+    route: Route, index: RouteIndex, osm: OsmWorld, o: VegetationOptions, sydney: SydneyGround,
+    mask: Uint8Array, W: number, H: number, x0: number, z0: number, cell: number,
+    tallAt: Map<number, number[]>, tkey: (x: number, z: number) => number,
+    add: (k: Kind, x: number, y: number, z: number, w: number, h: number, rot: number, c: THREE.Color) => void, tint: THREE.Color,
+  ) {
+    const hw = o.roadHalfWidth;
+    let n = 0;
+    const tryPine = (x: number, z: number, seed: number) => {
+      const near = index.nearest(x, z, o.corridor);
+      if (near.index < 0 || near.dist < hw + 2.2) return;
+      const mx = Math.floor((x - x0) / cell), mz = Math.floor((z - z0) / cell);
+      if (mx < 0 || mz < 0 || mx >= W || mz >= H || mask[mz * W + mx]) return;
+      for (let a = -1; a <= 1; a++) {
+        for (let b = -1; b <= 1; b++) {
+          const l = tallAt.get(tkey(x + a * 10, z + b * 10));
+          if (l) for (let k = 0; k < l.length; k += 2) if (Math.hypot(l[k] - x, l[k + 1] - z) < 8) return;
+        }
+      }
+      const y = o.heightAt(x, z);
+      if (!Number.isFinite(y) || y < 0.8) return;
+      const raw = o.rawHeightAt?.(x, z) ?? y;
+      if (Math.abs(raw - y) > 1.5) return;
+      const h = 15 + hash2(seed, 3) * 10;
+      sydneyTint('pine', hash2(seed, 5), tint);
+      add('spruceF', x, y - 0.3, z, Math.min(Math.max(h * 0.2, 3.2), 7) / 0.16 * (0.9 + hash2(seed, 7) * 0.2), h, hash2(seed, 11) * 6.283, tint);
+      const l = tallAt.get(tkey(x, z));
+      if (l) l.push(x, z);
+      else tallAt.set(tkey(x, z), [x, z]);
+      n++;
+    };
+    // park edges within a few hundred metres of the sea, along the route
+    for (const poly of osm.shore?.parks ?? []) {
+      const ring = poly.outer;
+      let carry = 0;
+      for (let i = 0; i < ring.length; i += 2) {
+        const ax = ring[i], az = ring[i + 1], bx = ring[(i + 2) % ring.length], bz = ring[(i + 3) % ring.length];
+        const len = Math.hypot(bx - ax, bz - az);
+        for (let d = carry; d < len; d += 17 + hash2(i, 9) * 6) {
+          const x = ax + ((bx - ax) * d) / (len || 1), z = az + ((bz - az) * d) / (len || 1);
+          carry = d - len;
+          if (sydney.seaDist(x, z) > 260 || hash2(Math.floor(x), Math.floor(z)) > 0.5) continue;
+          tryPine(x + (hash2(i, 13) - 0.5) * 3, z + (hash2(i, 17) - 0.5) * 3, Math.floor(x * 7 + z));
+        }
+      }
+    }
+    // beside the road where it runs along the beach
+    for (let i = 3; i < route.n - 3; i += Math.max(1, Math.round(19 / route.step))) {
+      const h = route.heading[i], rx = Math.cos(h), rz = Math.sin(h);
+      const x = route.x[i], z = route.z[i];
+      if (sydney.seaDist(x, z) > 140) continue;
+      // the sea side: where the sea is nearer
+      const sd = sydney.seaDist(x + rx * 25, z + rz * 25) <= sydney.seaDist(x - rx * 25, z - rz * 25) ? 1 : -1;
+      if (hash2(i, 71) > 0.5) continue;
+      const lat = hw + 3.2 + hash2(i, 73) * 3;
+      tryPine(x + rx * sd * lat, z + rz * sd * lat, i * 31);
+    }
+    return n;
   }
 
   /** Fallback: fill OSM forest polygons on a jittered grid. */

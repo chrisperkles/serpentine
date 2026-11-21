@@ -387,3 +387,36 @@ symptom (what it looked like), cause, fix and where. Newest at the bottom of eac
   shadow reads as a pale flat plane. Separately, the coarse terrain mesh did poke through the asphalt at that crest
   (a ray hit terrain 3 to 5 m before the road), so city routes sink the drawn mesh 1.1 m under the road instead of
   0.45 m (`Terrain.roadSink`; `groundHeight` keeps 0.45 so placed objects do not move).
+- **A route with traffic showed no cars.** Sydney's traffic spawned the first car 650 m ahead on a 6 to 20 s timer and
+  oncoming cars close at 22 m/s, so a capture (which waits 24 s) or a ride's first half minute saw an empty road; the
+  cars that were there had already passed. Also the rider's own lane was +1.7 m, right of the heading, in a country
+  that drives left: the rider sat in the oncoming lane. Fix: `seedTraffic` puts cars on the road at load and after
+  any jump along the route, a suburb spawns every 4 to 10 s, and `Engine.loadWorld` starts a left-hand rider at
+  -1.7. Check traffic with a shot taken a few seconds after load as well as the usual 24 s wait. Where: `Life.ts`
+  `seedTraffic`, `traffic`; `Engine.ts` `loadWorld`.
+- **Pooled things must be re-placed in route distance, not in world space.** Parked cars, beachgoers, surfers and
+  pavement walkers are small pools; each frame the ones more than ~90 m behind (or never placed) are handed a free
+  spot 20 to 600 m ahead, found by bisecting a list of spots sorted by route distance. A teleport (a capture, a ride
+  restart) then costs one frame. Spots are computed once: kerb spaces in front of houses (not at a side street, not on
+  an embankment), sand within sight of the route. Where: `Life.ts` `sydneySpots`, `spotPlace`.
+- **A rotation applied to world coordinates throws a grid kilometres off.** The cemetery's headstone grid was turned
+  by rotating absolute world x, z (thousands of metres from the origin) and landed nowhere near the polygon. Rotate
+  about the polygon's centre. Where: `Props.ts` `sydneyLandmarks`.
+- **Guessing a landmark's coordinates from memory put headstones on a beach.** Waverley Cemetery is south of Bronte
+  Beach, not between Tamarama and Bronte. Fix: place the landmark, shoot a drone frame, read where the aerial photo
+  shows it, move it. Where: `Props.ts` `sydneyLandmarks`.
+- **A gum is pale, open and drooping, not a dark round crown.** `treeModels.ts` `gumGeometry` builds three shapes: a
+  tall gum (straight pale trunk forking high, sparse hanging leaf cards, crown wider at the top), an angophora
+  (short salmon trunk, sinuous limbs, wide layered crown) and a coastal banksia (crooked dark trunk, dense dome).
+  Bark colours are in the model (instance tints only colour the leaves), so tone differs between shapes through
+  separate geometries and between trees through palettes (`season.ts` `sydneyTint`). Sydney needs six instanced
+  kinds, so `Vegetation.ts` has `extraA` and `extraB` beside the four shared ones; the impostor atlas is six cells
+  wide only for Sydney, other biomes build exactly what they did.
+- **One OSM outline can be a whole terrace.** A 25 m x 12 m footprint tagged `house` became a single hip roof the size
+  of a church. Rectangular footprints are now split into 6 to 7 m units, each with a roof colour of its own (terracotta,
+  slate, Colorbond), a brick fin and a chimney on every party wall, and a verandah and front wall on the side nearer the
+  route; footprints more than 10 m deep and over 230 m2 are walk-up flats. Painted units use pale colours only: a navy
+  wall read as a hoarding. Where: `Buildings.ts` `sydneyHouses`, `addSydneyBuilding`.
+- **Firewood stacks stood in front of Sydney houses.** `Props.build` put one beside 32 % of `house` footprints unless
+  the biome was `streets`; `suburb` now skips them too. Where: `Props.ts`.
+

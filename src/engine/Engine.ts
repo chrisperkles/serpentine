@@ -340,6 +340,8 @@ export class Engine {
     // scenes/<id>.json "biomeTweaks" adjust the regional look for one route (Sa Calobra's grey rock)
     const biome = biomeFor(route, sceneDef?.biome as string | undefined, sceneDef?.biomeTweaks as Partial<Biome> | undefined);
     this.biome = biome;
+    // the rider starts in the lane of the country's traffic: left of the heading where cars keep left
+    this.lateral = this.targetLateral = biome.leftHand ? -1.7 : 1.7;
     setTerrainBiome(biome);
     const index = new RouteIndex(route);
     const { frame } = route;

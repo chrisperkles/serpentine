@@ -58,22 +58,53 @@ is needed before any score counts as final. Nothing was scraped.
 
 ## Open issues
 
-- Trees come from a canopy model that cannot tell species apart; species are guessed from distance to the sea and from
-  OSM parks. Real Norfolk pines stand where the model finds few trees (the Bondi promenade).
-- Houses are extruded OSM footprints: no verandahs, no iron lace, no front fences, no garden walls.
-- The Oxford Street shop fronts have generic awnings and glass; the Bondi Pavilion, Icebergs pool, Bronte baths and the
-  Coogee jetty are not built.
+- Trees come from a canopy model that cannot tell species apart; species are guessed from distance to the sea, from OSM
+  parks and from height (small peaks are banksia and tea-tree). Norfolk pines along the promenades are added by rule
+  (park edges within 260 m of the sea, the road side where it runs along a beach), not from a tree survey.
+- Houses are still extruded OSM footprints. Rectangular ones are now split into 6 to 7 m units (terrace rows, semis)
+  with their own roof colours, party-wall fins, chimneys, verandahs and front walls; odd outlines keep one hip roof.
+  No iron lace, no bullnose curves, no gable-end bargeboards, no garden fences on corner lots.
+- The Oxford Street shop fronts have generic awnings and glass; the Bronte baths and the Coogee jetty are not built.
+  Bondi Pavilion and the Icebergs club are boxes with windows and arcades, not photographs of the real buildings.
+- Waverley Cemetery is not in the OSM data: the headstones fill a hand-drawn polygon (`Props.ts` `sydneyLandmarks`)
+  and may be 20 to 40 m off the real wall.
 - Not checked: whether the sun path is right for the southern hemisphere.
-- Ground photo (Esri) has pastel patches over built-up land; they are muted, not removed.
-- Beach surf is the terrain water shader, no breaking waves.
+- Ground photo (Esri) has pastel patches over built-up land; they are muted, not removed (ground is another pass).
+- Beach surf is the terrain water shader, no breaking waves. Nobody swims.
 - Power poles and overhead wires are not drawn.
+- People are one scanned figure in 40 clothing looks: pairs of identical outfits show up.
 
 ## Feedback log
 
 | Date | Chris said | Reason | Status |
 |---|---|---|---|
-| 2026-11-21 | City routes "don't feel like the real place"; surroundings (trees, buildings) matter, not the road surface | Same complaint as Central Park | First pass built (branch `city-sydney`) |
+| 2026-11-21 | City routes "don't feel like the real place"; surroundings (trees, buildings) matter, not the road surface | Same complaint as Central Park | First pass built (branch `city-sydney`); second pass (`r3-sydney`) on life, gums, houses, landmarks |
 
 ## Status
 
-First pass 2026-11-21. Not reviewed by the `serpentine-reviewer` yet.
+First pass 2026-11-21: reviewer REJECT 2.88 (vegetation 3, built 3, life 2, place 3).
+
+Second pass 2026-11-21 (`r3-sydney`), not reviewed yet:
+
+- Life: no cars appeared because traffic only spawned 650 m out on a 6 to 20 s timer, so a paused capture (or the
+  first half minute of a ride) saw an empty road. Traffic is now on the road at load and after any jump, comes every
+  4 to 10 s, and the rider rides in the left lane (Engine: `lateral` -1.7 for `leftHand`; it was +1.7, so the rider
+  sat in the oncoming lane). Parked cars at the kerb in front of houses, a blue and white bus, about 190 people:
+  pavement walkers (busier near the sand), picnics, beach groups on towels, surfers with boards, dog walkers.
+- Trees: two more crown shapes (angophora, banksia) and a rebuilt tall gum, six tree slots in Sydney, tones vary tree to
+  tree, Norfolk pine rows on promenades.
+- Houses and landmarks: see Open issues.
+
+**Where to look (km along the route, the loop is 17.66 km):**
+
+| What | km | Notes |
+|---|---|---|
+| Bondi Pavilion | 0.15 to 0.25 | beside the road on the beach side; `side` camera shows it best |
+| Bondi beach, Norfolk pines, surfers and sand crowd | 0.2 to 0.7 | drone at 0.25 |
+| Sandstone headland, Tamarama | 1.0 to 1.9 | chase at 1.0, drone at 1.8 |
+| Bronte beachfront and its pines | 2.3 to 2.7 | chase at 2.48 |
+| Waverley Cemetery headstones | 3.4 to 4.1 | drone at 3.65, on the left of the road |
+| Randwick terraces, semis, verandahs | 5.8 to 9.0 | chase at 6.2, 6.5, 7.5 |
+| Coogee beachfront | 7.0 to 7.2 | chase at 7.05 |
+| Centennial Park (figs, gums, picnics) | 10.5 to 13.0 | chase at 11.0 and 13.5 |
+| Oxford Street, Bondi Junction | 13.3 to 15.0 | chase at 14.8 shows terraces and a bus; the shop strip itself was not checked |

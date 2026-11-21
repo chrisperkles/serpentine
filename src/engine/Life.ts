@@ -9,7 +9,7 @@ import { pointAt, type Route, type RouteIndex, type RoutePoint } from '../geo/ro
 import { patchMaterial } from './atmosphere.ts';
 import { loadModel } from './Landmarks.ts';
 import type { Biome } from './biome.ts';
-import { accessoryMaterial, dogGeometry, leashGeometry, pedicabGeometry, Person, PersonKit, strollerGeometry } from './People.ts';
+import { accessoryMaterial, dogGeometry, leashGeometry, pedicabGeometry, Person, PersonKit, strollerGeometry, surfboardGeometry, towelGeometry } from './People.ts';
 import { parkBenches, type BenchSpot } from './Props.ts';
 import { Rider } from './Rider.ts';
 import { tramAt, tramGeometry, tramLines, tramMaterial, type TramLine } from './Tram.ts';
@@ -17,6 +17,8 @@ import { WorldGroup } from './dispose.ts';
 
 const CANOPIES = ['#f5a11a', '#d7263d', '#1b98e0', '#2bb673', '#f4d35e', '#7b2cbf', '#ff6b35', '#e0e0e0'];
 const KITS = ['#e63946', '#1d3557', '#2a9d8f', '#f4a261', '#f1f1ee', '#111214', '#ffb703', '#8338ec'];
+// Australia drives white, silver and grey
+const SYD_CARS = ['#f2f2ef', '#d9dbdd', '#9ea3a8', '#1f2329', '#8c1c13', '#2d4a6b', '#f2f2ef', '#c7a25a'];
 const CAR_COLOURS = ['#5d6f86', '#b8bcc2', '#1f2329', '#8c1c13', '#f2f2ef', '#2d4a6b', '#4a5d3a', '#c7a25a'];
 
 function rng(seed: number) {
@@ -110,6 +112,8 @@ interface Jogger {
   phase: number;
   /** Not yet put on the road around the rider. */
   fresh: boolean;
+  /** Sydney pavements: which side of the road (+1 right of the route heading, -1 left). */
+  side?: 1 | -1;
 }
 
 /** Someone sitting on one of the park benches, kept on the benches near the rider. */
@@ -123,6 +127,23 @@ interface Cluster {
   obj: THREE.Group;
   placed: boolean;
   s: number;
+  /** Index into the spot list it stands on (Sydney beach and parking spots). */
+  spot?: number;
+}
+
+/** A place beside the route where something can stand: a kerb space, a patch of sand. */
+interface Spot {
+  x: number;
+  z: number;
+  y: number;
+  /** Route distance (m); spot lists are sorted by it. */
+  s: number;
+  /** Route heading there (rad). */
+  h: number;
+  /** Which side of the route: +1 right of its heading, -1 left. */
+  side: 1 | -1;
+  /** Sand at the water's edge (surfers) rather than dry beach. */
+  wet?: boolean;
 }
 
 /** A pedicab on the drive: a rider pedalling and sometimes passengers. */
@@ -157,6 +178,7 @@ export class Life extends WorldGroup {
   private cars: THREE.Group[] = [];
   private nextOncoming = 6;
   private nextOvertake = 40;
+  private nextAhead = 15;
   private rand = rng(99);
   private route: Route | null = null;
   private tmp: Partial<RoutePoint> = {};
@@ -184,6 +206,16 @@ export class Life extends WorldGroup {
   private clusters: Cluster[] = [];
   private pedicabs: Pedicab[] = [];
   private index: RouteIndex | null = null;
+  /** Sydney: last rider position (a jump re-seeds the traffic), kerb spaces, parked cars, beach spots and the beach crowd. */
+  private lastS = NaN;
+  private parkSpots: Spot[] = [];
+  private parked: Cluster[] = [];
+  private beachSpots: Spot[] = [];
+  private wetSpots: Spot[] = [];
+  private beachers: Cluster[] = [];
+  private surfers: Cluster[] = [];
+  /** Per route sample: sand within ~150 m, so pavements near the beach are busier. */
+  private coastal: Uint8Array | null = null;
   private coverAt: (x: number, z: number) => number = () => 0;
 
   async build(
@@ -649,15 +681,82 @@ export class Life extends WorldGroup {
     }
   }
 
-  /** Sydney's streets: traffic, walkers on the coastal path and promenades, groups on the lawns, a few cyclists. */
+  /**
+   * Sydney's streets: traffic, cars parked at the kerb, people on the pavements, the beaches and the lawns, surfers at
+   * Bondi, a few cyclists. Everything is pooled around the rider (about 190 people, 11 moving and 22 parked vehicles).
+   */
   private async buildSuburb(index: RouteIndex, osm: OsmWorld, r: () => number) {
-    const [hatch, van, moto, kit] = await Promise.all([loadModel('car-hatchback.glb'), loadModel('car-van.glb'), loadModel('motorbike.glb'), PersonKit.load()]);
-    for (let i = 0; i < 5; i++) this.cars.push(tinted(hatch, ['car-hatchback_body'], CAR_COLOURS[i * 2 % CAR_COLOURS.length]));
-    for (let i = 0; i < 2; i++) this.cars.push(tinted(van, ['car-van_body'], CAR_COLOURS[(i * 3 + 4) % CAR_COLOURS.length]));
+    const route = this.route!;
+    const [hatch, van, moto, bus, kit] = await Promise.all([
+      loadModel('car-hatchback.glb'), loadModel('car-van.glb'), loadModel('motorbike.glb'), loadModel('bus.glb'), PersonKit.load(),
+    ]);
+    const acc = accessoryMaterial();
+    for (let i = 0; i < 6; i++) this.cars.push(tinted(hatch, ['car-hatchback_body'], SYD_CARS[i % SYD_CARS.length]));
+    for (let i = 0; i < 3; i++) this.cars.push(tinted(van, ['car-van_body'], SYD_CARS[(i * 3 + 1) % SYD_CARS.length]));
     for (let i = 0; i < 2; i++) this.cars.push(tinted(moto, ['moto_tank'], CANOPIES[i + 1]));
+    // Sydney's buses are blue and white
+    const sbus = tinted(tinted(bus, ['bus_body'], '#1f5aa6'), ['bus_stripe'], '#f4f4f2');
+    this.cars.push(sbus);
+    this.coaches.add(sbus);
     for (const c of this.cars) {
       c.visible = false;
       this.add(c);
+    }
+    // cars at the kerb: tinted bases are cloned, so the clones share geometry and materials
+    const bases = [
+      ...SYD_CARS.map((c) => tinted(hatch, ['car-hatchback_body'], c)),
+      ...[SYD_CARS[0], SYD_CARS[3], SYD_CARS[2]].map((c) => tinted(van, ['car-van_body'], c)),
+    ];
+    for (let i = 0; i < 22; i++) {
+      const o = bases[i % bases.length].clone(true);
+      o.visible = false;
+      this.add(o);
+      this.parked.push({ obj: o, placed: false, s: 0 });
+    }
+    this.sydneySpots(route, index, osm);
+    // people on the pavements beside the road: runners, pairs, dog walkers, pushchairs; busier near the beaches
+    const DOGS: [string, string][] = [['#b8864b', '#5a3b1c'], ['#1c1b1b', '#0d0d0d'], ['#e6dfd0', '#a89b84'], ['#6b4a2f', '#2d1d10']];
+    const person = (sc = 0.9 + r() * 0.18) => kit.rigged(Math.floor(r() * kit.count), sc);
+    for (let i = 0; i < 32; i++) {
+      const g = new THREE.Group();
+      const kind = r();
+      const people: Person[] = [];
+      let run = r() < 0.3;
+      let dog: THREE.Object3D | undefined;
+      const put = (x: number, z: number) => {
+        const q = person();
+        q.position.set(x, 0, z);
+        g.add(q);
+        people.push(q);
+      };
+      if (kind < 0.46) put(0, 0);
+      else if (kind < 0.72) { put(-0.5, 0); put(0.5, 0.1); }
+      else if (kind < 0.8) { put(-0.55, 0); put(0.5, 0.35); put(0, -0.9); }
+      else if (kind < 0.92) {
+        run = false;
+        put(0, 0);
+        const [coat, dark] = DOGS[Math.floor(r() * DOGS.length)];
+        const d = new THREE.Mesh(dogGeometry(coat, dark), acc);
+        d.position.set(1.0, 0, -0.5);
+        d.scale.setScalar(0.8 + r() * 0.35);
+        d.castShadow = true;
+        g.add(d);
+        g.add(new THREE.Mesh(leashGeometry(new THREE.Vector3(0.22, 0.85, -0.2), new THREE.Vector3(0.98, 0.68, -0.8)), acc));
+        dog = d;
+      } else {
+        run = false;
+        put(0, 0);
+        const sm = new THREE.Mesh(strollerGeometry(['#243a5e', '#3d3f44', '#8a2f2a'][Math.floor(r() * 3)]), acc);
+        sm.position.set(0, 0, -0.85);
+        sm.castShadow = true;
+        g.add(sm);
+      }
+      g.visible = false;
+      this.add(g);
+      this.joggers.push({
+        obj: g, people, run, dog, s: 0, dir: r() < 0.5 ? 1 : -1, speed: run ? 2.5 + r() * 1.0 : 1.1 + r() * 0.35,
+        lateral: this.halfWidth + 0.9 + r() * 1.8, phase: r() * 10, fresh: true, side: r() < 0.5 ? 1 : -1,
+      });
     }
     // footpaths and promenades within sight of the route: the coastal walk, beach fronts, park paths
     const paths = osm.roads.filter((l) => {
@@ -665,32 +764,96 @@ export class Life extends WorldGroup {
       const m = Math.floor(l.pts.length / 4) * 2;
       return index.nearest(l.pts[m], l.pts[m + 1], 140).index >= 0;
     });
-    for (let i = 0; i < 70 && paths.length; i++) {
+    for (let i = 0; i < 40 && paths.length; i++) {
       const l = paths[Math.floor(r() * paths.length)];
       const run = r() < 0.3;
-      const p = kit.rigged(Math.floor(r() * kit.count), 0.9 + r() * 0.18);
+      const p = person();
       this.add(p);
       this.walkers.push({
         obj: p, rig: p, run, pts: l.pts, seg: Math.floor(r() * (l.pts.length / 2 - 1)), t: r(), dir: r() < 0.5 ? 1 : -1,
         speed: run ? 2.4 + r() * 1.0 : 1.0 + r() * 0.5, phase: r() * 10,
       });
     }
-    // groups standing about on lawns and the grass above the beaches
-    for (let i = 0; i < 16; i++) {
+    const group = (n: number, kids = 0.15) => {
       const g = new THREE.Group();
-      const n = 1 + Math.floor(r() * 3.4);
-      const rad = 0.55 + r() * 0.35;
-      const a0 = r() * Math.PI * 2;
+      const rad = 0.55 + r() * 0.35, a0 = r() * Math.PI * 2;
       for (let k = 0; k < n; k++) {
-        const m = kit.standing(Math.floor(r() * kit.count), 0.9 + r() * 0.18);
+        const m = kit.standing(Math.floor(r() * kit.count), n > 1 && k === n - 1 && r() < kids ? 0.62 : 0.9 + r() * 0.18);
         const a = a0 + (k / n) * Math.PI * 2;
         m.position.set(n === 1 ? 0 : Math.cos(a) * rad, 0, n === 1 ? 0 : Math.sin(a) * rad);
-        m.rotation.y = n === 1 ? 0 : Math.atan2(-Math.cos(a), -Math.sin(a)) + (r() - 0.5) * 0.7;
+        // the figures face -Z: this turns them in towards the middle of the group
+        m.rotation.y = n === 1 ? 0 : Math.atan2(Math.cos(a), Math.sin(a)) + (r() - 0.5) * 0.7;
         g.add(m);
       }
+      return g;
+    };
+    /** People sitting on a rug or towel, facing in, the way a picnic or a beach group does. */
+    const sitters = (n: number, colour: string, stripe: string) => {
+      const g = new THREE.Group();
+      const rug = new THREE.Mesh(towelGeometry(colour, stripe), acc);
+      rug.scale.set(n > 2 ? 1.7 : 1.2, 1, n > 2 ? 1.2 : 1);
+      rug.rotation.y = Math.PI / 2;
+      g.add(rug);
+      for (let k = 0; k < n; k++) {
+        const q = person(0.88 + r() * 0.16);
+        q.sit(0.12 + r() * 0.1);
+        q.legL.rotation.x = q.legR.rotation.x = 1.3;
+        const a = (k / n) * Math.PI * 2 + r() * 0.5;
+        q.position.set(Math.cos(a) * 0.55, 0.2 - 0.9 * q.scale.y, Math.sin(a) * 0.55);
+        q.rotation.y = Math.atan2(Math.cos(a), Math.sin(a));
+        g.add(q);
+      }
+      return g;
+    };
+    const RUGS: [string, string][] = [['#d94f3d', '#f2efe6'], ['#2f7fc1', '#f2efe6'], ['#f2c14e', '#2f7fc1'], ['#e8e4d8', '#d94f3d'], ['#3a9d7c', '#f2efe6']];
+    // groups standing about on lawns and the grass above the beaches, and picnics in the parks (gather)
+    for (let i = 0; i < 16; i++) {
+      const g = group(1 + Math.floor(r() * 3.4));
       g.visible = false;
       this.add(g);
       this.clusters.push({ obj: g, placed: false, s: 0 });
+    }
+    for (let i = 0; i < 7; i++) {
+      const [c, st] = RUGS[i % RUGS.length];
+      const g = sitters(2 + Math.floor(r() * 2.5), c, st);
+      g.visible = false;
+      this.add(g);
+      this.clusters.push({ obj: g, placed: false, s: 0 });
+    }
+    // on the sand: groups standing and sitting on towels, surfers with their boards
+    for (let i = 0; i < 10; i++) {
+      const g = group(1 + Math.floor(r() * 3));
+      g.visible = false;
+      this.add(g);
+      this.beachers.push({ obj: g, placed: false, s: 0 });
+    }
+    for (let i = 0; i < 9; i++) {
+      const [c, st] = RUGS[(i + 2) % RUGS.length];
+      const g = sitters(2 + Math.floor(r() * 2), c, st);
+      g.visible = false;
+      this.add(g);
+      this.beachers.push({ obj: g, placed: false, s: 0 });
+    }
+    const BOARDS: [string, string][] = [['#f4f2ea', '#1b6fb5'], ['#f2c230', '#f4f2ea'], ['#1b6fb5', '#f4f2ea'], ['#e9632b', '#f4f2ea'], ['#f4f2ea', '#d94f3d']];
+    for (let i = 0; i < 6; i++) {
+      const g = new THREE.Group();
+      const q = kit.standing(Math.floor(r() * kit.count), 0.95 + r() * 0.1);
+      g.add(q);
+      const [bc, bs] = BOARDS[i % BOARDS.length];
+      const board = new THREE.Mesh(surfboardGeometry(bc, bs), acc);
+      board.position.set(0.5, 0, 0.05);
+      board.rotation.z = -0.07;
+      board.castShadow = true;
+      g.add(board);
+      if (i % 2) {
+        // a second surfer beside the first
+        const q2 = kit.standing(Math.floor(r() * kit.count), 0.95);
+        q2.position.set(-0.9, 0, 0.3);
+        g.add(q2);
+      }
+      g.visible = false;
+      this.add(g);
+      this.surfers.push({ obj: g, placed: false, s: 0 });
     }
     for (let i = 0; i < 8; i++) {
       const c = new Rider({ kit: KITS[i], accent: '#111214', bike: i % 2 ? '#e9e9e4' : '#1a1c1f' });
@@ -698,6 +861,230 @@ export class Life extends WorldGroup {
       this.add(c);
       this.cyclistPool.push(c);
     }
+  }
+
+  /**
+   * Places beside the route where things can stand, found once: kerb spaces in front of houses (not at a side
+   * street, not on an embankment, not in a tunnel) and patches of sand within sight of the route.
+   */
+  private sydneySpots(route: Route, index: RouteIndex, osm: OsmWorld) {
+    const hw = this.halfWidth;
+    const cell = 24;
+    const key = (x: number, z: number) => Math.floor(x / cell) * 100003 + Math.floor(z / cell);
+    const grid = new Map<number, number[]>();
+    const addTo = (g: Map<number, number[]>, x: number, z: number) => {
+      const k = key(x, z);
+      const l = g.get(k);
+      if (l) l.push(x, z);
+      else g.set(k, [x, z]);
+    };
+    for (const b of osm.buildings) {
+      if (b.part || b.ring.length < 6) continue;
+      let cx = 0, cz = 0;
+      for (let i = 0; i < b.ring.length; i += 2) { cx += b.ring[i]; cz += b.ring[i + 1]; }
+      addTo(grid, cx / (b.ring.length / 2), cz / (b.ring.length / 2));
+    }
+    // side streets: vertices of other roads near the route, to keep cars out of junction mouths
+    const side = new Map<number, number[]>();
+    for (const l of osm.roads) {
+      if (['path', 'footway', 'pedestrian', 'cycleway', 'steps', 'track', 'corridor'].includes(l.kind)) continue;
+      for (let i = 0; i + 3 < l.pts.length; i += 2) {
+        const ax = l.pts[i], az = l.pts[i + 1], bx = l.pts[i + 2], bz = l.pts[i + 3];
+        const n = Math.max(1, Math.ceil(Math.hypot(bx - ax, bz - az) / 4));
+        for (let k = 0; k < n; k++) {
+          const x = ax + ((bx - ax) * k) / n, z = az + ((bz - az) * k) / n;
+          if (index.nearest(x, z, 40).index < 0 || index.nearest(x, z, hw + 1.5).index >= 0) continue;
+          addTo(side, x, z);
+        }
+      }
+    }
+    const anyWithin = (g: Map<number, number[]>, x: number, z: number, d: number) => {
+      const c0 = Math.floor((x - d) / cell), c1 = Math.floor((x + d) / cell), r0 = Math.floor((z - d) / cell), r1 = Math.floor((z + d) / cell);
+      for (let a = c0; a <= c1; a++) {
+        for (let b = r0; b <= r1; b++) {
+          const l = g.get(a * 100003 + b);
+          if (!l) continue;
+          for (let i = 0; i < l.length; i += 2) if (Math.hypot(l[i] - x, l[i + 1] - z) < d) return true;
+        }
+      }
+      return false;
+    };
+    const inTunnel = (s: number) => route.tunnels.some(([a, b]) => s > a - 10 && s < b + 10);
+    const hash = (i: number, k: number) => {
+      const x = Math.sin(i * 12.9898 + k * 78.233) * 43758.5453;
+      return x - Math.floor(x);
+    };
+    const stepI = Math.max(1, Math.round(8 / route.step));
+    for (let i = 2; i < route.n - 2; i += stepI) {
+      const h = route.heading[i], rx = Math.cos(h), rz = Math.sin(h);
+      const s = i * route.step;
+      if (inTunnel(s)) continue;
+      for (const sd of [-1, 1] as const) {
+        if (hash(i, sd + 3) > 0.42) continue;
+        const x = route.x[i] + rx * sd * (hw + 0.5), z = route.z[i] + rz * sd * (hw + 0.5);
+        if (!anyWithin(grid, route.x[i] + rx * sd * (hw + 14), route.z[i] + rz * sd * (hw + 14), 20)) continue;
+        if (anyWithin(side, x, z, 7)) continue;
+        const y = this.groundAt(x, z);
+        if (!Number.isFinite(y) || Math.abs(y - route.ele[i]) > 0.7) continue;
+        this.parkSpots.push({ x, z, y, s, h, side: sd });
+      }
+    }
+    // sand within sight of the route: dry beach, and the wet strip near the waterline where surfers stand
+    const sand = osm.shore?.sand ?? [];
+    const inRing = (ring: Float32Array, x: number, z: number) => {
+      let inside = false;
+      for (let i = 0, j = ring.length - 2; i < ring.length; j = i, i += 2) {
+        const xi = ring[i], zi = ring[i + 1], xj = ring[j], zj = ring[j + 1];
+        if (zi > z !== zj > z && x < ((xj - xi) * (z - zi)) / (zj - zi) + xi) inside = !inside;
+      }
+      return inside;
+    };
+    const onSand = (x: number, z: number) => {
+      for (const poly of sand) {
+        const bb = poly.bbox;
+        if (x < bb[0] || x > bb[2] || z < bb[1] || z > bb[3]) continue;
+        if (!inRing(poly.outer, x, z)) continue;
+        if (poly.holes.some((h) => inRing(h, x, z))) continue;
+        return true;
+      }
+      return false;
+    };
+    this.coastal = new Uint8Array(route.n);
+    const stepS = Math.max(1, Math.round(20 / route.step));
+    for (let i = 0; i < route.n; i += stepS) {
+      const h = route.heading[i], rx = Math.cos(h), rz = Math.sin(h);
+      let near = false;
+      for (let k = 0; k < 14; k++) {
+        const sd = k % 2 ? 1 : -1, d = 10 + Math.floor(k / 2) * 22 + hash(i, k) * 12;
+        const x = route.x[i] + rx * sd * d, z = route.z[i] + rz * sd * d;
+        if (!onSand(x, z)) continue;
+        near = true;
+        const y = this.groundAt(x, z);
+        if (!Number.isFinite(y) || y < 0.25 || y > 9) continue;
+        this.beachSpots.push({ x, z, y, s: i * route.step, h, side: sd, wet: y < 1.3 });
+      }
+      if (near) for (let j = Math.max(0, i - stepS * 4); j < Math.min(route.n, i + stepS * 4); j++) this.coastal[j] = 1;
+    }
+    // surfers stand where the sand is lowest (the DEM may not resolve the waterline: take the lowest quarter then)
+    this.wetSpots = this.beachSpots.filter((sp) => sp.wet);
+    if (this.wetSpots.length < 8) {
+      const ys = this.beachSpots.map((sp) => sp.y).sort((a, b) => a - b);
+      const cut = ys[Math.floor(ys.length / 4)] ?? 0;
+      this.wetSpots = this.beachSpots.filter((sp) => sp.y <= cut);
+    }
+  }
+
+  /** People on the pavements beside the road; the ones left behind come back in ahead, more of them near the beaches. */
+  private stroll(dt: number, route: Route, riderS: number, riderDir: 1 | -1) {
+    const L = route.length;
+    for (const j of this.joggers) {
+      j.s += j.speed * j.dir * dt;
+      if (route.loop) j.s = ((j.s % L) + L) % L;
+      let rel = (j.s - riderS) * riderDir;
+      if (route.loop) rel = ((((rel + L / 2) % L) + L) % L) - L / 2;
+      if (j.fresh || rel < -120 || rel > 620) {
+        // out of sight: step back in ahead (at the start: anywhere along the view, mostly near)
+        let s = 0, ok = false;
+        for (let tries = 0; tries < 7 && !ok; tries++) {
+          s = riderS + (j.fresh ? 20 + this.rand() ** 1.5 * 520 : 380 + this.rand() * 230) * riderDir;
+          if (route.loop) s = ((s % L) + L) % L;
+          else if (s < 0 || s > L) continue;
+          ok = !this.coastal || this.coastal[Math.min(route.n - 1, Math.round(s / route.step))] === 1 || this.rand() < 0.3;
+        }
+        j.fresh = false;
+        j.s = s;
+        j.side = this.rand() < 0.5 ? 1 : -1;
+        j.lateral = this.halfWidth + 0.9 + this.rand() * 1.8;
+        if (!ok) { j.obj.visible = false; continue; }
+      }
+      const p = pointAt(route, j.s, this.tmp);
+      const sd = j.side ?? 1;
+      const x = p.x + Math.cos(p.heading) * sd * j.lateral, z = p.z + Math.sin(p.heading) * sd * j.lateral;
+      const y = this.groundAt(x, z);
+      // no one on a bank or a cliff edge beside the road
+      if (!Number.isFinite(y) || Math.abs(y - p.ele) > 2.0) { j.obj.visible = false; continue; }
+      j.obj.visible = true;
+      j.phase += dt * j.speed * (j.run ? 3.0 : 4.2);
+      j.obj.position.set(x, y + 0.02 + Math.abs(Math.sin(j.phase)) * (j.run ? 0.05 : 0.025), z);
+      const fx = Math.sin(p.heading) * j.dir, fz = -Math.cos(p.heading) * j.dir;
+      j.obj.rotation.y = Math.atan2(-fx, -fz);
+      j.people.forEach((q, k) => q.gait(j.phase + k * 1.7, j.run));
+      if (j.dog) j.dog.position.y = Math.abs(Math.sin(j.phase * 1.1)) * 0.04;
+    }
+  }
+
+  /** Route position -> signed distance ahead of the rider (wrapped on a loop). */
+  private relOf(route: Route, s: number, riderS: number, riderDir: 1 | -1) {
+    const L = route.length;
+    let rel = (s - riderS) * riderDir;
+    if (route.loop) rel = ((((rel + L / 2) % L) + L) % L) - L / 2;
+    return rel;
+  }
+
+  /** The spot nearest a route distance in a list sorted by it. */
+  private spotIndex(spots: Spot[], s: number) {
+    let lo = 0, hi = spots.length - 1;
+    while (lo < hi) {
+      const mid = (lo + hi) >> 1;
+      if (spots[mid].s < s) lo = mid + 1;
+      else hi = mid;
+    }
+    return lo;
+  }
+
+  /** Hand the pool members that fell behind (or were never placed) a free spot between lo and hi metres ahead. */
+  private spotPlace(pool: Cluster[], spots: Spot[], route: Route, riderS: number, riderDir: 1 | -1, lo: number, hi: number, put: (c: Cluster, sp: Spot) => void) {
+    if (!spots.length) return;
+    const L = route.length;
+    for (const c of pool) {
+      if (c.placed && c.spot !== undefined) {
+        const rel = this.relOf(route, c.s, riderS, riderDir);
+        if (rel > -90 && rel < hi + 150) continue;
+        c.placed = false;
+        c.obj.visible = false;
+      }
+      for (let tries = 0; tries < 5 && !c.placed; tries++) {
+        const first = c.spot === undefined;
+        let s = riderS + (first ? 10 + this.rand() ** 1.4 * (hi - 10) : lo + this.rand() * (hi - lo)) * riderDir;
+        if (route.loop) s = ((s % L) + L) % L;
+        else if (s < 0 || s > L) continue;
+        const k = Math.min(spots.length - 1, this.spotIndex(spots, s) + Math.floor(this.rand() * 4));
+        if (pool.some((o) => o !== c && o.placed && o.spot === k)) continue;
+        const sp = spots[k];
+        const rel = this.relOf(route, sp.s, riderS, riderDir);
+        if (rel < lo * 0.5 || rel > hi + 60) continue;
+        c.spot = k;
+        c.s = sp.s;
+        c.placed = true;
+        put(c, sp);
+        c.obj.visible = true;
+      }
+    }
+  }
+
+  /** Cars at the kerb in front of houses, facing the way traffic on their side of the road goes (the left). */
+  private kerb(route: Route, riderS: number, riderDir: 1 | -1) {
+    this.spotPlace(this.parked, this.parkSpots, route, riderS, riderDir, 20, 420, (c, sp) => {
+      // traffic keeps left: on the route's left side cars point along the route, on its right side against it
+      const facing = sp.side < 0 ? 1 : -1;
+      const h = sp.h + (facing < 0 ? Math.PI : 0);
+      const jit = (this.rand() - 0.5) * 2.4;
+      c.obj.position.set(sp.x + Math.sin(sp.h) * jit, sp.y + 0.04, sp.z - Math.cos(sp.h) * jit);
+      c.obj.rotation.set(0, -h + (this.rand() - 0.5) * 0.05, 0, 'YXZ');
+    });
+  }
+
+  /** Beachgoers and surfers on the sand within sight of the route. */
+  private sand(route: Route, riderS: number, riderDir: 1 | -1) {
+    this.spotPlace(this.beachers, this.beachSpots, route, riderS, riderDir, 20, 480, (c, sp) => {
+      c.obj.position.set(sp.x, sp.y, sp.z);
+      c.obj.rotation.y = this.rand() * Math.PI * 2;
+    });
+    this.spotPlace(this.surfers, this.wetSpots, route, riderS, riderDir, 20, 600, (c, sp) => {
+      c.obj.position.set(sp.x, sp.y, sp.z);
+      // turned side-on to the water, the way people stand with a board
+      c.obj.rotation.y = sp.h + (this.rand() < 0.5 ? 0 : Math.PI) + (this.rand() - 0.5) * 0.8;
+    });
   }
 
   /** People on a car-free drive: kept around the rider, the ones left behind come back in ahead. */
@@ -990,7 +1377,12 @@ export class Life extends WorldGroup {
       this.sit(route, riderS, riderDir);
       this.gather(route, riderS, riderDir);
       this.pedi(dt, route, riderS, riderDir);
-    } else if (this.suburb) this.gather(route, riderS, riderDir);
+    } else if (this.suburb) {
+      this.gather(route, riderS, riderDir);
+      this.stroll(dt, route, riderS, riderDir);
+      this.kerb(route, riderS, riderDir);
+      this.sand(route, riderS, riderDir);
+    }
     if (this.streetLife) {
       this.gatherStreet(route, riderS, riderDir);
       if (this.trams.length) this.tram(dt, route, riderS, riderDir);
@@ -1086,16 +1478,70 @@ export class Life extends WorldGroup {
     }
   }
 
+  /**
+   * Sydney: traffic is already on the road at load, and again after any jump along the route (a capture, a restart):
+   * oncoming cars spread over the view ahead, one slow car in front of the rider, a cyclist each way.
+   */
+  private seedTraffic(route: Route, riderS: number, riderDir: 1 | -1) {
+    for (const v of this.vehicles) v.obj.visible = false;
+    this.vehicles.length = 0;
+    for (const c of this.cyclists) c.obj.visible = false;
+    this.cyclists.length = 0;
+    const L = route.length;
+    const at = (d: number) => {
+      const s = riderS + d * riderDir;
+      return route.loop ? ((s % L) + L) % L : s;
+    };
+    const inRoute = (s: number) => route.loop || (s > 0 && s < L);
+    const take = () => {
+      const pool = this.cars.filter((c) => !c.visible);
+      return pool.length ? pool[Math.floor(this.rand() * pool.length)] : null;
+    };
+    let d = 40 + this.rand() * 40;
+    for (let i = 0; i < 5; i++, d += 85 + this.rand() * 110) {
+      const obj = take(), s = at(d);
+      if (!obj || !inRoute(s)) continue;
+      obj.visible = true;
+      const speed = this.coaches.has(obj) ? 7 + this.rand() * 2 : 11 + this.rand() * 5;
+      this.vehicles.push({ obj, s, dir: (-riderDir) as 1 | -1, speed, lateral: 1.6, targetLateral: 1.6, overtaking: false });
+    }
+    // one car driving away ahead in the rider's direction (a touch faster than a rider, which shares its lane)
+    const obj = take(), s = at(130 + this.rand() * 90);
+    if (obj && inRoute(s)) {
+      obj.visible = true;
+      this.vehicles.push({ obj, s, dir: riderDir, speed: 9 + this.rand() * 2, lateral: 1.6, targetLateral: 1.6, overtaking: false });
+    }
+    const free = this.cyclistPool.filter((c) => !c.visible);
+    const down = free.pop(), up = free.pop();
+    if (down && inRoute(at(260))) {
+      down.visible = true;
+      this.cyclists.push({ obj: down, s: at(260), dir: (-riderDir) as 1 | -1, speed: 9 + this.rand() * 3, lateral: 1.4 + this.rand() * 0.6, climbing: false });
+    }
+    if (up && inRoute(at(90))) {
+      up.visible = true;
+      this.cyclists.push({ obj: up, s: at(90), dir: riderDir, speed: 3.4 + this.rand(), lateral: 2.3, climbing: true });
+    }
+    this.nextOncoming = 4 + this.rand() * 6;
+    this.nextOvertake = 20 + this.rand() * 25;
+  }
+
   private traffic(dt: number, route: Route, riderS: number, riderDir: 1 | -1, riderSpeed: number, _time: number) {
+    if (this.suburb) {
+      let jump = Math.abs(riderS - this.lastS);
+      if (route.loop) jump = Math.min(jump, route.length - jump);
+      if (!(jump < 120)) this.seedTraffic(route, riderS, riderDir);
+      this.lastS = riderS;
+    }
     const free = () => this.cars.filter((c) => !c.visible);
     this.nextOncoming -= dt;
     this.nextOvertake -= dt;
     const ahead = (d: number) => riderS + d * riderDir;
     const inRoute = (s: number) => route.loop || (s > 0 && s < route.length);
     if (this.nextOncoming < 0) {
-      this.nextOncoming = 20 + this.rand() * 45;
+      // a suburb is busier: one every 4 to 10 s, appearing about 500 m out (they cross the view in under 25 s)
+      this.nextOncoming = this.suburb ? 4 + this.rand() * 6 : 20 + this.rand() * 45;
       const pool = free();
-      const s = ahead(650);
+      const s = ahead(this.suburb ? 450 + this.rand() * 150 : 650);
       if (pool.length && inRoute(s)) {
         const obj = pool[Math.floor(this.rand() * pool.length)];
         obj.visible = true;
@@ -1103,11 +1549,25 @@ export class Life extends WorldGroup {
         this.vehicles.push({ obj, s, dir: (-riderDir) as 1 | -1, speed, lateral: 1.6, targetLateral: 1.6, overtaking: false });
       }
     }
+    if (this.suburb) {
+      this.nextAhead -= dt;
+      if (this.nextAhead < 0) {
+        // a car driving away ahead of the rider now and then (never slower than the rider: it shares the rider's lane)
+        this.nextAhead = 22 + this.rand() * 25;
+        const pool = free();
+        const s = ahead(160 + this.rand() * 120);
+        if (pool.length && inRoute(s)) {
+          const obj = pool[Math.floor(this.rand() * pool.length)];
+          obj.visible = true;
+          this.vehicles.push({ obj, s, dir: riderDir, speed: Math.max(riderSpeed + 2, 8) + this.rand() * 2, lateral: 1.6, targetLateral: 1.6, overtaking: false });
+        }
+      }
+    }
     if (this.nextOvertake < 0) {
-      this.nextOvertake = 50 + this.rand() * 70;
+      this.nextOvertake = this.suburb ? 30 + this.rand() * 40 : 50 + this.rand() * 70;
       const pool = free();
       const s = ahead(-220);
-      const oncomingNear = this.vehicles.some((v) => v.dir !== riderDir && Math.abs(v.s - riderS) < 400);
+      const oncomingNear = this.vehicles.some((v) => v.dir !== riderDir && Math.abs(v.s - riderS) < (this.suburb ? 260 : 400));
       if (pool.length && inRoute(s) && !oncomingNear) {
         const obj = pool[Math.floor(this.rand() * pool.length)];
         obj.visible = true;
@@ -1124,7 +1584,8 @@ export class Life extends WorldGroup {
         v.targetLateral = rel > -25 && rel < 20 ? -1.6 : 1.6;
       }
       v.lateral += (v.targetLateral - v.lateral) * (1 - Math.exp(-dt * 1.2));
-      const gone = v.dir === riderDir ? rel > 800 : rel < -160;
+      // a slow car the rider has left far behind is gone too
+      const gone = v.dir === riderDir ? rel > 800 || rel < -320 : rel < -160;
       if (gone || (!route.loop && (v.s < 0 || v.s > route.length))) {
         v.obj.visible = false;
         this.vehicles.splice(i, 1);

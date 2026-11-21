@@ -88,15 +88,30 @@ export function parkTint(species: 'elm' | 'plane' | 'oak', day: number, elevatio
   return out.multiplyScalar(0.86 + rand * 0.26);
 }
 
+const SYD_GUM = [[0.5, 0.62, 0.52], [0.54, 0.6, 0.42], [0.5, 0.58, 0.46], [0.6, 0.66, 0.5], [0.45, 0.55, 0.46]];
+const SYD_COASTAL = [[0.3, 0.4, 0.25], [0.5, 0.58, 0.48], [0.38, 0.5, 0.3], [0.58, 0.62, 0.42]];
+const SYD_STREET = [[0.34, 0.5, 0.24], [0.42, 0.54, 0.3], [0.46, 0.56, 0.26], [0.3, 0.44, 0.28]];
+
+/** A colour between neighbouring entries of a palette, picked by rand (0..1). */
+function palette(p: number[][], rand: number, out: THREE.Color): THREE.Color {
+  const f = rand * (p.length - 1), i = Math.min(p.length - 2, Math.floor(f)), t = f - i;
+  return out.setRGB(p[i][0] + (p[i + 1][0] - p[i][0]) * t, p[i][1] + (p[i + 1][1] - p[i][1]) * t, p[i][2] + (p[i + 1][2] - p[i][2]) * t);
+}
+
 /**
- * Sydney in early summer, all evergreen: eucalypts grey-green, Norfolk pines dark, Moreton Bay figs the darkest and
- * glossiest, street and garden trees (camphor laurel, brush box, jacaranda in leaf) a fresher mid green.
+ * Sydney in early summer, all evergreen: gums grey-green to olive and lemon (tone differs tree to tree, `rand` picks
+ * the hue and `rand2` the brightness), angophoras a yellower olive, coastal banksia and tea-tree from dark to silvery,
+ * Norfolk pines dark, Moreton Bay figs the darkest and glossiest, street and garden trees (camphor laurel, brush
+ * box, jacaranda in leaf) a fresher mid green.
  */
-export function sydneyTint(species: 'gum' | 'pine' | 'fig' | 'street', rand: number, out: THREE.Color): THREE.Color {
+export function sydneyTint(species: 'gum' | 'angophora' | 'coastal' | 'pine' | 'fig' | 'street', rand: number, out: THREE.Color, rand2 = rand): THREE.Color {
+  const light = 0.95 + rand2 * 0.4;
   switch (species) {
-    case 'gum': return out.setRGB(0.5, 0.58, 0.4).multiplyScalar(0.82 + rand * 0.3);
+    case 'gum': return palette(SYD_GUM, rand, out).multiplyScalar(light * 1.05);
+    case 'angophora': return palette(SYD_GUM, 0.25 + rand * 0.5, out).multiplyScalar(light);
+    case 'coastal': return palette(SYD_COASTAL, rand, out).multiplyScalar(light);
     case 'pine': return out.setRGB(0.3, 0.42, 0.28).multiplyScalar(0.8 + rand * 0.25);
     case 'fig': return out.setRGB(0.2, 0.36, 0.17).multiplyScalar(0.82 + rand * 0.25);
-    default: return out.setRGB(0.34, 0.5, 0.24).multiplyScalar(0.8 + rand * 0.32);
+    default: return palette(SYD_STREET, rand, out).multiplyScalar(0.8 + rand2 * 0.4);
   }
 }

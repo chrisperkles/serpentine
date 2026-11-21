@@ -615,10 +615,198 @@ function hipRoof(b: Builder, ring: THREE.Vector2[], eave: number, pitch: number,
 const SYD_BRICKS = [srgb(0.55, 0.26, 0.19), srgb(0.62, 0.33, 0.22), srgb(0.5, 0.25, 0.2), srgb(0.66, 0.4, 0.27), srgb(0.46, 0.22, 0.17)];
 const SYD_BLOND = [srgb(0.78, 0.64, 0.43), srgb(0.84, 0.72, 0.52), srgb(0.72, 0.56, 0.38)];
 const SYD_RENDERS = [srgb(0.93, 0.9, 0.83), srgb(0.9, 0.84, 0.7), srgb(0.84, 0.89, 0.85), srgb(0.9, 0.78, 0.7), srgb(0.96, 0.95, 0.92), srgb(0.88, 0.85, 0.78)];
-const SYD_TILES = [srgb(0.52, 0.27, 0.2), srgb(0.46, 0.24, 0.18), srgb(0.58, 0.32, 0.23), srgb(0.42, 0.22, 0.17), srgb(0.36, 0.34, 0.33)];
+// roofs of the east: terracotta tile, grey slate, and Colorbond sheet (Windspray grey, Monument, Classic Cream, Wilderness green)
+const SYD_ROOFS = [
+  srgb(0.52, 0.27, 0.2), srgb(0.58, 0.32, 0.23), srgb(0.46, 0.24, 0.18), srgb(0.55, 0.3, 0.2), srgb(0.5, 0.26, 0.19),
+  srgb(0.34, 0.35, 0.37), srgb(0.4, 0.41, 0.42),
+  srgb(0.52, 0.55, 0.57), srgb(0.62, 0.64, 0.64), srgb(0.28, 0.29, 0.3),
+  srgb(0.82, 0.78, 0.64), srgb(0.28, 0.37, 0.31),
+];
+const SYD_SANDSTONE = [srgb(0.76, 0.62, 0.43), srgb(0.7, 0.56, 0.38), srgb(0.8, 0.68, 0.5)];
+const SYD_PAINT = [srgb(0.95, 0.94, 0.9), srgb(0.9, 0.93, 0.92), srgb(0.9, 0.86, 0.76), srgb(0.93, 0.84, 0.78), srgb(0.84, 0.88, 0.84)];
 // Bondi Junction's towers: grey-green and bronze glass, pale concrete
 const SYD_GLASS = [srgb(0.42, 0.52, 0.55), srgb(0.55, 0.6, 0.58), srgb(0.66, 0.67, 0.64), srgb(0.33, 0.4, 0.43), srgb(0.5, 0.48, 0.42)];
 const SYD_FLAT_ROOFS = [srgb(0.45, 0.45, 0.44), srgb(0.55, 0.54, 0.51), srgb(0.38, 0.4, 0.4)];
+
+interface Rect {
+  dir: THREE.Vector2;
+  perp: THREE.Vector2;
+  u0: number;
+  u1: number;
+  v0: number;
+  v1: number;
+  /** Footprint area over the area of its oriented rectangle: 1 for a clean rectangle. */
+  fill: number;
+}
+
+/** The rectangle around a footprint, aligned to its longest edge. */
+function orientedRect(local: THREE.Vector2[], area: number): Rect {
+  let best = 0;
+  let dir = new THREE.Vector2(1, 0);
+  for (let i = 0; i < local.length; i++) {
+    const e = new THREE.Vector2().subVectors(local[(i + 1) % local.length], local[i]);
+    if (e.length() > best) { best = e.length(); dir = e.clone().normalize(); }
+  }
+  const perp = new THREE.Vector2(-dir.y, dir.x);
+  let u0 = Infinity, u1 = -Infinity, v0 = Infinity, v1 = -Infinity;
+  for (const p of local) {
+    const u = p.x * dir.x + p.y * dir.y, v = p.x * perp.x + p.y * perp.y;
+    u0 = Math.min(u0, u); u1 = Math.max(u1, u); v0 = Math.min(v0, v); v1 = Math.max(v1, v);
+  }
+  return { dir, perp, u0, u1, v0, v1, fill: area / Math.max(1, (u1 - u0) * (v1 - v0)) };
+}
+
+interface HouseSpec {
+  base: number;
+  gmax: number;
+  wallTop: number;
+  wallCol: THREE.Color;
+  surf: number;
+  seed: number;
+  render: boolean;
+  roofColour?: string;
+  ox: number;
+  oz: number;
+  levels: number;
+  ground: (x: number, z: number) => number;
+}
+
+/**
+ * Sydney houses on a rectangle: `n` units side by side (a unit is 6 to 7 m wide, so a long footprint is a terrace row
+ * or a pair of semis, not one huge house), a roof of its own colour over each, brick fins and chimneys on the party
+ * walls, and on the side that faces the route a verandah on white posts under a skillion roof and a low sandstone or
+ * brick front wall.
+ */
+function sydneyHouses(b: Builder, R: Rect, h: HouseSpec) {
+  const { dir, perp, u0, u1, v0, v1 } = R;
+  const { seed, gmax, wallTop, base } = h;
+  const P = (u: number, v: number, y: number) => new THREE.Vector3(dir.x * u + perp.x * v, y, dir.y * u + perp.y * v);
+  const len = u1 - u0, dep = v1 - v0;
+  const n = len > 13 ? Math.max(2, Math.round(len / 6.8)) : 1;
+  const uw = len / n;
+  const vm = (v0 + v1) / 2, half = dep / 2;
+  const pick = <T,>(a: T[], k: number) => a[Math.floor(rnd(seed + k) * a.length)];
+  // which long side faces the street: the one nearer the route
+  let front = 0;
+  const idx = sydneyStreet;
+  if (idx) {
+    const probe = (sg: number) => {
+      const q = P((u0 + u1) / 2, vm + sg * (half + 7), 0);
+      const hit = idx.nearest(q.x + h.ox, q.z + h.oz, 70);
+      return hit.index >= 0 ? hit.dist : Infinity;
+    };
+    const a = probe(1), c = probe(-1);
+    if (Math.min(a, c) < 60) front = a < c ? 1 : -1;
+  }
+  const pitch = THREE.MathUtils.degToRad(24 + rnd(seed + 11) * 8);
+  const rise = Math.min(half * Math.tan(pitch), 4.4);
+  const ov = 0.5;
+  const eave = wallTop - ov * (rise / half);
+  const ridgeY = wallTop + rise;
+  const hipped = rnd(seed + 12) < 0.7 && (n > 1 || len < dep * 2.6);
+  const hipLen = hipped ? Math.min(half, len / 2 - 0.3) : 0;
+  const ru0 = u0 - ov + hipLen, ru1 = u1 + ov - hipLen;
+  const e = (u: number, v: number) => P(u, v, eave);
+  const rg = (u: number) => P(Math.min(ru1, Math.max(ru0, u)), vm, ridgeY);
+  const roofC = new THREE.Vector3(P(u0, vm, 0).x, wallTop - 50, P(u0, vm, 0).z);
+  const unitRoof: THREE.Color[] = [];
+  const unitWall: THREE.Color[] = [];
+  const tileOf = (j: number) => {
+    if (h.roofColour && j === 0) return parseColour(h.roofColour, pick(SYD_ROOFS, 7)).clone();
+    // neighbours often share a roof (a pair of semis built together), but not always
+    return j > 0 && rnd(seed + 40 + j) < 0.45 ? unitRoof[j - 1] : pick(SYD_ROOFS, 7 + j * 3);
+  };
+  for (let j = 0; j < n; j++) {
+    unitRoof.push(tileOf(j));
+    // brick runs through a terrace row; semis and terraces are often painted differently from their neighbour
+    unitWall.push(n > 1 && !h.render && rnd(seed + 50 + j) < 0.35 ? pick(SYD_PAINT, 55 + j) : h.wallCol);
+  }
+  for (let j = 0; j < n; j++) {
+    const ua = u0 + j * uw, ub = ua + uw;
+    const um = (ua + ub) / 2;
+    const painted = unitWall[j] !== h.wallCol;
+    const c = P(um, vm, 0);
+    b.box(c.x, c.z, dir, uw / 2, half, base, wallTop, unitWall[j], painted ? SYD_RENDER : h.surf);
+    // roof of this unit: slopes from its stretch of eaves up to the (shared) ridge
+    const sa = j === 0 ? u0 - ov : ua, sb = j === n - 1 ? u1 + ov : ub;
+    b.quad(e(sa, v0 - ov), e(sb, v0 - ov), rg(sb), rg(sa), unitRoof[j], ROOF, roofC);
+    b.quad(e(sa, v1 + ov), e(sb, v1 + ov), rg(sb), rg(sa), unitRoof[j], ROOF, roofC);
+    if (hipLen > 0 && j === 0) b.tri(e(u0 - ov, v0 - ov), e(u0 - ov, v1 + ov), rg(u0), unitRoof[j], ROOF, roofC);
+    if (hipLen > 0 && j === n - 1) b.tri(e(u1 + ov, v0 - ov), e(u1 + ov, v1 + ov), rg(u1), unitRoof[j], ROOF, roofC);
+    if (hipLen === 0) {
+      // gable ends: the wall rises to the ridge
+      if (j === 0) b.tri(P(u0, v0, wallTop), P(u0, v1, wallTop), P(u0, vm, ridgeY), unitWall[j], painted ? SYD_RENDER : h.surf, new THREE.Vector3(c.x, wallTop, c.z));
+      if (j === n - 1) b.tri(P(u1, v0, wallTop), P(u1, v1, wallTop), P(u1, vm, ridgeY), unitWall[j], painted ? SYD_RENDER : h.surf, new THREE.Vector3(c.x, wallTop, c.z));
+    }
+  }
+  // party-wall fins standing proud of the roof, and a chimney on most of them
+  const brick = pick(SYD_BRICKS, 16);
+  for (let j = 1; j < n; j++) {
+    const u = u0 + j * uw, t = 0.16;
+    const ctr = P(u, vm, eave + 0.2);
+    const prof = (uu: number): THREE.Vector3[] => [P(uu, v0 - ov, eave - 0.05), P(uu, v1 + ov, eave - 0.05), P(uu, v1 + ov, eave + 0.32), P(uu, vm, ridgeY + 0.36), P(uu, v0 - ov, eave + 0.32)];
+    for (const uu of [u - t, u + t]) {
+      const q = prof(uu);
+      b.tri(q[0], q[1], q[2], brick, TRIM, ctr);
+      b.tri(q[0], q[2], q[3], brick, TRIM, ctr);
+      b.tri(q[0], q[3], q[4], brick, TRIM, ctr);
+    }
+    const A = prof(u - t), B = prof(u + t);
+    b.quad(A[4], B[4], B[3], A[3], brick, TRIM, ctr);
+    b.quad(A[2], B[2], B[3], A[3], brick, TRIM, ctr);
+    const cc = P(u, vm, 0);
+    b.box(cc.x, cc.z, dir, 0.4, 0.3, ridgeY - 0.3, ridgeY + 1.3, brick, TRIM);
+  }
+  if (n === 1 && len > 6 && rnd(seed + 14) < 0.7) {
+    const cu = u0 + len * (0.28 + 0.4 * rnd(seed + 15)), cc = P(cu, vm, 0);
+    b.box(cc.x, cc.z, dir, 0.4, 0.4, wallTop, ridgeY + 1.1, pick(SYD_BRICKS, 16), TRIM);
+  }
+  if (!front) return;
+  // verandah: a skillion roof on posts along the facade, and a low front wall at the boundary
+  const vD = 2.1;
+  const roofIn = gmax + Math.min(3.3, wallTop - gmax - 0.25);
+  const roofOut = roofIn - 0.5;
+  const post = srgb(0.93, 0.93, 0.9);
+  const vRoof = pick(SYD_ROOFS, 8);
+  const fence = pick(SYD_SANDSTONE, 19);
+  const useBrick = rnd(seed + 23) < 0.4;
+  const fenceCol = useBrick ? pick(SYD_BRICKS, 24) : fence;
+  const faceV = vm + front * half;
+  const groundAt = (x: number, z: number) => {
+    const g = h.ground(x + h.ox, z + h.oz);
+    return Number.isFinite(g) ? Math.min(g, gmax) : gmax;
+  };
+  const clearTo = (v: number, u: number, d: number) => {
+    const q = P(u, v, 0);
+    return !idx || idx.nearest(q.x + h.ox, q.z + h.oz, d).index < 0;
+  };
+  for (let j = 0; j < n; j++) {
+    const ua = u0 + j * uw + 0.4, ub = u0 + (j + 1) * uw - 0.4, um = (ua + ub) / 2;
+    const roofV = faceV + front * vD;
+    if (rnd(seed + 60 + j) < 0.62 && clearTo(roofV, um, 4.4)) {
+      const r00 = P(ua, faceV, roofIn), r10 = P(ub, faceV, roofIn), r11 = P(ub, roofV, roofOut), r01 = P(ua, roofV, roofOut);
+      const vc = new THREE.Vector3(P(um, faceV, 0).x, roofIn - 40, P(um, faceV, 0).z);
+      b.quad(r00, r10, r11, r01, vRoof, ROOF, vc);
+      // posts every ~2.6 m, and a deep white frieze under the front edge
+      const np = Math.max(2, Math.round((ub - ua) / 2.6) + 1);
+      for (let k = 0; k < np; k++) {
+        const pu = ua + 0.1 + ((ub - ua - 0.2) * k) / (np - 1), pc = P(pu, roofV - front * 0.15, 0);
+        b.box(pc.x, pc.z, dir, 0.065, 0.065, groundAt(pc.x, pc.z) - 0.2, roofOut, post, TRIM);
+      }
+      const fc = P(um, roofV - front * 0.1, 0);
+      b.box(fc.x, fc.z, dir, (ub - ua) / 2, 0.025, roofOut - 0.42, roofOut, post, TRIM);
+    }
+    // the front wall: sandstone or brick, with a pier at each unit boundary
+    const fv = faceV + front * (vD + 2.6);
+    if (rnd(seed + 70 + j) < 0.75 && clearTo(fv, um, 4.2)) {
+      const wc = P(um, fv, 0);
+      const g0 = groundAt(wc.x, wc.z);
+      b.box(wc.x, wc.z, dir, uw / 2 - 0.05, 0.14, g0 - 0.3, g0 + 0.85, fenceCol, TRIM);
+      const pc = P(ua - 0.4, fv, 0);
+      b.box(pc.x, pc.z, dir, 0.22, 0.22, g0 - 0.3, g0 + 1.2, fenceCol, TRIM);
+    }
+  }
+}
 
 /**
  * One Sydney building. Towers and 3D parts reuse the city block code (glass and concrete, no New York water tanks);
@@ -644,6 +832,7 @@ function addSydneyBuilding(bld: Building, b: Builder, heightAt: (x: number, z: n
     area += p.x * q.y - q.x * p.y;
   }
   area = Math.abs(area) / 2;
+  const rect = orientedRect(local, area);
   const kind = bld.kind;
   const centre0 = new THREE.Vector3(local.reduce((s, p) => s + p.x, 0) / local.length, 0, local.reduce((s, p) => s + p.y, 0) / local.length);
   // an open roof (bus shelter, carport, petrol canopy): a slab on its own, no walls
@@ -659,7 +848,9 @@ function addSydneyBuilding(bld: Building, b: Builder, heightAt: (x: number, z: n
   const shopKind = ['commercial', 'retail', 'pub', 'office', 'hotel'].includes(kind);
   const instit = ['university', 'school', 'hospital', 'public', 'government', 'civic', 'kindergarten', 'dormitory', 'military', 'synagogue', 'church', 'grandstand', 'service', 'construction'].includes(kind);
   const levels = bld.levels ?? Math.max(1, Math.round((bld.height - 1) / 3));
-  const flats = !instit && !shopKind && (kind === 'apartments' || (levels >= 3 && area > 120) || (['residential', 'yes'].includes(kind) && area > 260 && levels >= 2));
+  const flats = !instit && !shopKind && (kind === 'apartments' || (levels >= 3 && area > 120) || (['residential', 'yes'].includes(kind) && area > 260 && levels >= 2) ||
+    // a footprint too big and too deep for one house is a walk-up block, not a bungalow with a very large roof
+    (!instit && !shopKind && area > 230 && Math.min(rect.u1 - rect.u0, rect.v1 - rect.v0) > 10.5));
   // houses: everything small and low that is not a shop, school or block of flats
   const house = !flats && !shopKind && !instit && area < 420;
   const storeyH = flats || shopKind || instit ? 3.0 : 3.1;
@@ -679,6 +870,12 @@ function addSydneyBuilding(bld: Building, b: Builder, heightAt: (x: number, z: n
     const hsl = { h: 0, s: 0, l: 0 };
     wall.getHSL(hsl, THREE.SRGBColorSpace);
     wall.setHSL(hsl.h, Math.min(hsl.s, 0.45), Math.min(Math.max(hsl.l, 0.25), 0.82), THREE.SRGBColorSpace);
+  }
+  // houses on a rectangular footprint: a single house, a pair of semis or a terrace row of 6 to 7 m units, each with its
+  // own roof colour, party-wall fins and chimneys, and a verandah and front fence turned to the street
+  if (house && rect.fill > 0.86 && rect.v1 - rect.v0 < 30 && rect.u1 - rect.u0 > 5) {
+    sydneyHouses(b, rect, { base, gmax, wallTop, wallCol: wall, surf, seed, render: surf === SYD_RENDER, roofColour: bld.roofColour, ox, oz, levels: Math.min(levels, 2), ground: heightAt });
+    return;
   }
   // shops get awnings and glass in the ground floor (the 15.3 surface), and only where the block is on a street
   const wallSurf = surf === SYD_RENDER && shopKind ? SYD_RENDER + 0.3 : surf;
@@ -702,7 +899,7 @@ function addSydneyBuilding(bld: Building, b: Builder, heightAt: (x: number, z: n
   }
   const rectish = area / ((u1 - u0) * (v1 - v0)) > 0.78 && v1 - v0 < 30;
   const roofCentre = new THREE.Vector3(centre.x, wallTop - 50, centre.z);
-  const tile = parseColour(bld.roofColour, pick(SYD_TILES, 7));
+  const tile = parseColour(bld.roofColour, pick(SYD_ROOFS, 7));
   const lowHip = !house && rnd(seed + 8) < 0.3 && !shopKind;
   if ((house || instit) && rectish) {
     const P = (u: number, v: number, y: number) => new THREE.Vector3(dir.x * u + perp.x * v, y, dir.y * u + perp.y * v);
@@ -1317,6 +1514,9 @@ function reachesRoad(ring: Float32Array, index: RouteIndex, clear: number): bool
   return false;
 }
 
+/** The route being built around (Sydney only): houses turn their verandahs to the street it runs along. */
+let sydneyStreet: RouteIndex | null = null;
+
 export class Buildings extends WorldGroup {
   count = 0;
   centres: number[] = [];
@@ -1336,6 +1536,7 @@ export class Buildings extends WorldGroup {
     super();
     const groups = new Map<string, { builder: Builder; ox: number; oz: number }>();
     const style = STYLES[biome.buildings] ?? STYLES.flachgau;
+    sydneyStreet = style.sydney ? index : null;
     const mat = facadeMaterial(style);
     osm.buildings.forEach((bld, i) => {
       const x = bld.ring[0];
