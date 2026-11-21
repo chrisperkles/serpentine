@@ -30,6 +30,8 @@ export interface Biome {
   rockDensity: number;
   /** Boulders on steep slopes (scree below cliffs). */
   steepRocks?: number;
+  /** Lowland cut banks and embankments are vegetated earth (moss, roots, grass, saplings); only the steepest faces show layered rock. */
+  banks?: boolean;
   /** OSM meadows are pushed towards mown green (Alps) or left as photographed. */
   meadowPush: number;
   /** Grey photo pixels are bare limestone (karst) rather than gravel. */
@@ -91,6 +93,7 @@ export const ALPINE: Biome = {
   ferns: true,
   rock: new THREE.Color(0.86, 0.9, 0.95),
   rockDensity: 1,
+  banks: true,
   meadowPush: 1,
   karst: 0,
   posts: 'at',

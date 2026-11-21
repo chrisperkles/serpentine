@@ -480,3 +480,22 @@ symptom (what it looked like), cause, fix and where. Newest at the bottom of eac
 - **A custom camera is the way to look at a facade.** The `chase`, `side` and `drone` cams look along the road, so the
   buildings are a strip at the edge. `engine.cameraOverride` replaces the camera each frame: a capture script that sets
   it from route-relative offsets (along, right, up) reviews roof lines and skylines properly.
+- **Steep ground beside a lidar road read as bare, dark, dotted rock.** The terrain shader called everything over 42
+  degrees rock (the one-axis rock scan, with lichen speckle and cracks, plus the desaturated photo) and ground cover
+  skipped slopes over 37 degrees, so cut banks were dark grey-green with scan boulders stuck on them. Fix: biome
+  `banks` (Alpine, below the treeline fading out at 1450 to 1900 m): slopes of 26 to 55 degrees are an earth bank, a
+  tri-planar read of a new `bank` texture (R crumbly soil, G moss, B fibres and roots, each stretched to a fixed spread
+  and softened so it does not stair-step) at two scales, with patches of bare soil and marl on the steeper parts,
+  straw, litter and roots under the canopy mask; only above ~55 degrees does a face turn to layered grey-brown rock
+  (beds from `q.y`, calmer `rd`). Ground cover runs to 60 degrees with hanging tufts (a shade darker), ferns, a few
+  saplings, and small rounded embedded stones (`stoneGeometry`) instead of the faceted scan; more cover at the foot and
+  along the top edge, found by sampling the ground 3 m up and down the fall line. Where: `terrainMaterial.ts` (`lowland`,
+  `bankW`), `groundTextures.ts` `bank`, `GroundCover.ts` bank branch. Gate any new Alpine look on `uBanks` and the
+  treeline, so karst and city biomes stay as they were.
+- **Dark photo shadow made shaded verges black-green.** Tree shadows in the orthophoto sit under the albedo floor.
+  Fix: lowland ground below a luminance of about 0.085 is lifted to a warm forest-floor colour, the de-light floor
+  is 0.105 there, and the shade fill (`uBanks * 0.17`) and warm indirect tint replace the blue-green skylight.
+- **A flat verge colour next to a textured bank reads as a painted stripe.** The `photoRoad` verge was one colour with
+  hardly any detail. Fix: it carries the bank texture's clumps and a little straw, and a patchy gravel seam (verge mask,
+  noise threshold, 0.4 weight) breaks the edge. The mask is 4.5 m wide and blurred, so a real narrow ditch line needs
+  geometry or a distance field, not this mask. Not done.
