@@ -22,6 +22,7 @@ const CITY_KITS = [...KITS, '#e11d48', '#0ea5e9', '#84cc16', '#f97316', '#334155
 const CITY_SHORTS = ['#111214', '#111214', '#1d3557', '#f1f1ee', '#e63946', '#2a9d8f'];
 const CITY_BIKES = ['#e9e9e4', '#1a1c1f', '#c0392b', '#2c3e50', '#2a9d8f'];
 // Vienna drives white, silver, black and grey; taxis are cream; the post is yellow
+// (tinted() converts a colour to linear twice, so Post yellow has to be written much paler than it should look)
 const VIE_CARS = ['#f2f2ef', '#d9dbdd', '#9ea3a8', '#1f2329', '#1f2329', '#2d4a6b', '#f2f2ef', '#8c1c13', '#c9ccd0'];
 // Australia drives white, silver and grey
 const SYD_CARS = ['#f2f2ef', '#d9dbdd', '#9ea3a8', '#1f2329', '#8c1c13', '#2d4a6b', '#f2f2ef', '#c7a25a'];
@@ -470,7 +471,7 @@ export class Life extends WorldGroup {
     for (const c of VIE_CARS) this.cars.push(tinted(hatch, ['car-hatchback_body'], c));
     this.cars.push(taxi(), taxi());
     // Austrian Post is yellow
-    for (const c of ['#f2f2ef', '#f5c400', '#d9dbdd']) this.cars.push(tinted(van, ['car-van_body'], c));
+    for (const c of ['#f2f2ef', '#fff27a', '#d9dbdd']) this.cars.push(tinted(van, ['car-van_body'], c));
     // Wiener Linien buses are red and white
     const vbus = tinted(tinted(bus, ['bus_body'], '#c1121f'), ['bus_stripe'], '#f4f4f2');
     this.cars.push(vbus);
@@ -480,7 +481,7 @@ export class Life extends WorldGroup {
       c.visible = false;
       this.add(c);
     }
-    const bases = [...VIE_CARS.map((c) => tinted(hatch, ['car-hatchback_body'], c)), tinted(van, ['car-van_body'], '#f2f2ef'), tinted(van, ['car-van_body'], '#f5c400'), taxi()];
+    const bases = [...VIE_CARS.map((c) => tinted(hatch, ['car-hatchback_body'], c)), tinted(van, ['car-van_body'], '#f2f2ef'), tinted(van, ['car-van_body'], '#fff27a'), taxi()];
     for (let i = 0; i < 18; i++) {
       const o = bases[(i * 5) % bases.length].clone(true);
       o.visible = false;
