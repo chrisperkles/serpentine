@@ -35,6 +35,7 @@ import { Props } from './Props.ts';
 import { Life } from './Life.ts';
 import { disposeObject } from './dispose.ts';
 import { loadBakedTrees, type BakedTrees } from '../geo/trees.ts';
+import type { RemoteRider } from '../sim/session.ts';
 import type { Segment } from '../sim/segments.ts';
 import { loadMarkFonts, SegmentMarks } from './SegmentMarks.ts';
 
@@ -121,6 +122,9 @@ export class Engine {
   ghostDir: 1 | -1 = 1;
   bots: { s: number; dir: 1 | -1; speed: number }[] = [];
   private botRiders: Rider[] = [];
+  /** The others in a group ride, from the session each frame. */
+  riders: RemoteRider[] = [];
+  private groupRiders = new Map<string, { rider: Rider; tag: NameTag; lat: number; text: string; drawnAt: number; lift: number }>();
   lateral = 1.7;
   /** Where the rider steers to; `lateral` eases towards it. */
   targetLateral = 1.7;
@@ -638,6 +642,8 @@ export class Engine {
     clearWaterMask();
     this.setBots([]);
     this.bots = [];
+    this.clearGroupRiders();
+    this.riders = [];
     const w = this.world;
     if (!w) return;
     // first, so the forest and village builds still running see that their world is gone
@@ -681,6 +687,104 @@ export class Engine {
     this.scene.add(w.marks);
   }
 
+  /**
+   * The others in a group ride: their own kit, a name tag with their W/kg, each in a lane of their own (and out
+   * of ours when they are next to us). Riders who join get a model, riders who leave or go quiet lose it.
+   */
+  private updateGroupRiders(dt: number, route: Route) {
+    const seen = new Set<string>();
+    const now = performance.now();
+    let slot = 0;
+    for (const r of this.riders) {
+      if (r.stale) continue;
+      seen.add(r.id);
+      let g = this.groupRiders.get(r.id);
+      if (!g) {
+        const rider = new Rider({ kit: r.kit, accent: r.accent, bike: r.bike });
+        // larger than the pacers' tags: a friend's name should read from the saddle, 2 m from the screen
+        const tag = new NameTag(r.kit, 1.5);
+        rider.add(tag.sprite);
+        this.scene.add(rider);
+        g = { rider, tag, lat: GROUP_LANES[slot % GROUP_LANES.length], text: '', drawnAt: 0, lift: 0 };
+        this.groupRiders.set(r.id, g);
+      }
+      const i = slot++;
+      // a fourth rider and more ride a row back, so nobody stands inside anybody at the start
+      const back = Math.floor(i / 3) * 2.2;
+      let lane = GROUP_LANES[i % GROUP_LANES.length];
+      if (r.dir === this.riderDir && Math.abs(r.gap - back) < 2.6 && Math.abs(lane - this.lateral) < 0.8) {
+        lane = this.lateral > 1.2 ? this.lateral - 0.9 : this.lateral + 0.9;
+      }
+      g.lat += (lane - g.lat) * (1 - Math.exp(-dt * 1.5));
+      const s = r.s - back * r.dir;
+      this.placeRider(g.rider, s, r.dir, route, g.lat);
+      const grade = pointAt(route, s, tmp).grade * r.dir;
+      g.rider.update(dt, r.speed, r.speed > 0.3 ? r.cadence : 0, Math.min(1.2, r.wkg / 4), grade);
+      const text = r.wkg > 0.05 ? `${r.name}  ${r.wkg.toFixed(1)}` : r.name;
+      if (text !== g.text && now - g.drawnAt > 1000) {
+        g.tag.draw(text);
+        g.text = text;
+        g.drawnAt = now;
+      }
+    }
+    for (const [id, g] of this.groupRiders) {
+      if (seen.has(id)) continue;
+      this.scene.remove(g.rider);
+      disposeObject(g.rider);
+      this.groupRiders.delete(id);
+    }
+    this.stackTags(dt);
+  }
+
+  /**
+   * Name tags keep their size on screen, so riders a few metres apart in depth put theirs on top of each other.
+   * Nearest first, a tag that would cover one already placed moves up until it is clear.
+   */
+  private stackTags(dt: number) {
+    const cam = this.camera;
+    const sx = cam.projectionMatrix.elements[0];
+    const sy = cam.projectionMatrix.elements[5];
+    const placed: { x: number; y: number; w: number; h: number }[] = [];
+    const items = [...this.groupRiders.values()]
+      .map((g) => {
+        // riders hang straight off the scene: their own matrix is their world matrix, and placed this frame
+        g.rider.updateMatrix();
+        const at = new THREE.Vector3(0, TAG_Y, 0).applyMatrix4(g.rider.matrix);
+        return { g, at, d: at.distanceToSquared(cam.position) };
+      })
+      .sort((a, b) => a.d - b.d);
+    for (const { g, at } of items) {
+      const tag = g.tag.sprite;
+      const depth = -tagBase.copy(at).applyMatrix4(cam.matrixWorldInverse).z;
+      const ndc = at.project(cam);
+      let lift = 0;
+      if (depth > 0 && ndc.z < 1) {
+        // a sprite without size attenuation is scale × projection in NDC
+        const w = tag.scale.x * sx;
+        const h = tag.scale.y * sy;
+        let y = ndc.y;
+        for (let tries = 0; tries < 8; tries++) {
+          const hit = placed.some((r) => Math.abs(r.x - ndc.x) < (r.w + w) / 2 && Math.abs(r.y - y) < (r.h + h) / 2);
+          if (!hit) break;
+          y += h * 1.08;
+        }
+        placed.push({ x: ndc.x, y, w, h });
+        // back to metres at the tag's depth
+        lift = ((y - ndc.y) * Math.max(depth, 0.1)) / sy;
+      }
+      g.lift += (lift - g.lift) * (1 - Math.exp(-dt * 8));
+      tag.position.y = TAG_Y + g.lift;
+    }
+  }
+
+  private clearGroupRiders() {
+    for (const g of this.groupRiders.values()) {
+      this.scene.remove(g.rider);
+      disposeObject(g.rider);
+    }
+    this.groupRiders.clear();
+  }
+
   /** Pacer riders with name tags, one per W/kg value; `labels` overrides a tag's text (e.g. "KOM 17:52"). */
   setBots(wkgs: number[], labels?: (string | undefined)[]) {
     for (const r of this.botRiders) {
@@ -692,25 +796,9 @@ export class Engine {
     const kits = ['#2f7de1', '#f2c230', '#2fb36d', '#9b5de5', '#f15bb5'];
     wkgs.forEach((w, i) => {
       const rider = new Rider({ kit: kits[i % kits.length], accent: '#111214', bike: '#e9e9e4' });
-      const c = document.createElement('canvas');
-      c.width = 256;
-      c.height = 64;
-      const ctx = c.getContext('2d', { willReadFrequently: true })!;
-      ctx.fillStyle = 'rgba(13,27,36,0.78)';
-      ctx.beginPath();
-      ctx.roundRect(8, 8, 240, 48, 10);
-      ctx.fill();
-      ctx.fillStyle = kits[i % kits.length];
-      ctx.fillRect(20, 22, 20, 20);
-      ctx.fillStyle = '#eef3f4';
-      ctx.font = '600 30px "Barlow Condensed", sans-serif';
-      ctx.fillText(labels?.[i] ?? `Pacer ${w.toFixed(1)} W/kg`, 50, 42);
-      const tex = new THREE.CanvasTexture(c);
-      tex.colorSpace = THREE.SRGBColorSpace;
-      const tag = new THREE.Sprite(new THREE.SpriteMaterial({ map: tex, depthTest: true, transparent: true, sizeAttenuation: false }));
-      tag.scale.set(0.11, 0.0275, 1);
-      tag.position.set(0, 2.15, 0);
-      rider.add(tag);
+      const tag = new NameTag(kits[i % kits.length]);
+      tag.draw(labels?.[i] ?? `Pacer ${w.toFixed(1)} W/kg`);
+      rider.add(tag.sprite);
       this.botRiders.push(rider);
       this.scene.add(rider);
     });
@@ -796,6 +884,7 @@ export class Engine {
         const g = pointAt(route, b.s, tmp).grade * b.dir;
         rider.update(dt, b.speed, b.speed > 0.5 ? (g > 9 ? 66 : 88) : 0, g > 9 ? 1.0 : 0.6, g);
       });
+      this.updateGroupRiders(dt, route);
       const inTunnel = w.tunnels.contains(this.riderS);
       this.rig.update(this.camera, dt, route, this.riderS, this.riderDir, this.lateral, (x, z) => (inTunnel ? NaN : w.terrain.heightAt(x, z)), inTunnel);
       this.cameraOverride?.(this.camera);
@@ -862,5 +951,49 @@ export class Engine {
     this.unloadWorld();
     this.composer.dispose();
     this.renderer.dispose();
+  }
+}
+
+/** Height of a name tag above the road, m. */
+const TAG_Y = 2.15;
+const tagBase = new THREE.Vector3();
+
+/** Lateral places (m right of the centre line) for the riders of a group; ours starts at 1.7. */
+const GROUP_LANES = [0.8, 2.5, 0.05];
+
+/** A name over a rider's head: a canvas sprite that keeps its size on screen. */
+class NameTag {
+  readonly sprite: THREE.Sprite;
+  private ctx: CanvasRenderingContext2D;
+  private tex: THREE.CanvasTexture;
+  private colour: string;
+
+  constructor(colour: string, size = 1) {
+    this.colour = colour;
+    const c = document.createElement('canvas');
+    c.width = 256;
+    c.height = 64;
+    // GPU 2D-canvas work whitewashes WebGL on ANGLE/Metal: keep it on the CPU
+    this.ctx = c.getContext('2d', { willReadFrequently: true })!;
+    this.tex = new THREE.CanvasTexture(c);
+    this.tex.colorSpace = THREE.SRGBColorSpace;
+    this.sprite = new THREE.Sprite(new THREE.SpriteMaterial({ map: this.tex, depthTest: true, transparent: true, sizeAttenuation: false }));
+    this.sprite.scale.set(0.11 * size, 0.0275 * size, 1);
+    this.sprite.position.set(0, TAG_Y, 0);
+  }
+
+  draw(text: string) {
+    const ctx = this.ctx;
+    ctx.clearRect(0, 0, 256, 64);
+    ctx.fillStyle = 'rgba(13,27,36,0.78)';
+    ctx.beginPath();
+    ctx.roundRect(8, 8, 240, 48, 10);
+    ctx.fill();
+    ctx.fillStyle = this.colour;
+    ctx.fillRect(20, 22, 20, 20);
+    ctx.fillStyle = '#eef3f4';
+    ctx.font = '600 30px "Barlow Condensed", sans-serif';
+    ctx.fillText(text, 50, 42, 190);
+    this.tex.needsUpdate = true;
   }
 }

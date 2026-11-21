@@ -11,7 +11,7 @@
     "build": "tsc --noEmit && vite build",
     "preview": "vite preview",
     "typecheck": "tsc --noEmit",
-    "test": "node scripts/test-devices.ts && node scripts/test-hub.ts && node scripts/test-drivetrain.ts && node scripts/test-fit.ts && node scripts/test-strava.ts && node scripts/test-training.ts && node scripts/test-workouts.ts && node scripts/test-session.ts && node scripts/test-api.ts",
+    "test": "node scripts/test-devices.ts && node scripts/test-hub.ts && node scripts/test-drivetrain.ts && node scripts/test-fit.ts && node scripts/test-strava.ts && node scripts/test-training.ts && node scripts/test-workouts.ts && node scripts/test-session.ts && node scripts/test-relay.ts && node scripts/test-api.ts",
     "check": "npm run typecheck && npm run app:typecheck && npm test",
     "bake-routes": "node scripts/bake-routes.mjs",
     "start": "./Serpentine.command",

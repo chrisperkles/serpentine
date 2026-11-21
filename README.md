@@ -30,6 +30,7 @@ Before pairing, quit Zwift and Zwift Companion. A trainer accepts only one contr
 - **Virtual gears:** 24 gears (Zwift's ratios 0.75–5.49, gear 12 neutral) or a real drivetrain (see Drivetrain below). On a KICKR Core Zwift One or Zwift Hub the trainer runs the gears natively over Zwift's trainer protocol; other FTMS trainers get them emulated through the gradient.
 - **Hold watts:** the trainer holds a fixed power for the whole ride; the shifters change it by ±10 W. In ERG workouts the shifters scale intensity by ±5 %.
 - **History:** every ride is saved as `.json` + Strava-ready `.fit` in `~/Documents/Serpentine/rides` (override with `SERPENTINE_DATA`). The History screen shows totals, weekly training load, climb records and best efforts.
+- **Ride together:** friends on their own Macs ride the same route with you. **Ride together → Start a group ride** gives a five-letter code to send; they choose **Join** and type it. Everyone waits at the start until the leader starts the ride, then sets off on the same countdown; late riders start next to the group. You see each other in your kits with names and W/kg, the gaps, and you can sit in a friend's draft. Each ride is still your own in History and on Strava. How it works: [docs/multiplayer.md](docs/multiplayer.md).
 - **Ghost:** your fastest summit on a route rides with you, with a live time gap.
 - The ride starts as soon as you pedal. At the summit you roll back down and loop.
 - **HUD for the saddle:** sized to read from about 2 m and scaled with the screen height. Top left is your effort (power, W/kg, cadence, heart rate, gear), top right the climb (gradient, VAM over the last 30 s, km and hm to the top, altitude, hairpin count), along the bottom the ride totals.
@@ -114,7 +115,7 @@ npm run typecheck
 npm run bake-routes   # re-fetch preset routes from BRouter
 npm run bake-osm      # re-bake OSM corridors for presets
 npm run e2e           # Playwright: home → ride → summary → .fit (dev server must run)
-npm test              # unit tests (devices, drivetrain, FIT, Strava, training, workouts) and the local API
+npm test              # unit tests (devices, drivetrain, FIT, Strava, training, workouts, ride session, group-ride relay) and the local API
 npm run check         # typecheck (app + Mac app) and npm test, what CI runs on every push
 node scripts/shots-set.mjs <prefix> 9900:cinematic 3200:chase:inversion   # QA stills, HUD hidden
 node scripts/hud-shots.mjs <prefix>                                          # HUD as read from the saddle (2 m)
@@ -136,7 +137,7 @@ A lead-in is baked in four steps: `python3 -I scripts/bake-leadin.py gaisberg` (
 `node scripts/bake-osm.mjs gaisberg --lead-in`, `python scripts/bake-trees.py gaisberg <chm.tif> <dlt.tif> --lead-in`
 (a canopy crop that covers the lead-in) and `node scripts/bake-turnarounds.mjs gaisberg`.
 
-`?ride=<preset>&sim=1&workout=<id>&at=<metres>&cam=drone&time=golden` starts a ride directly (used for screenshots). It skips the lead-in so `at` stays in route metres; add `&leadin=1` to ride it.
+`?ride=<preset>&sim=1&workout=<id>&at=<metres>&cam=drone&time=golden` starts a ride directly (used for screenshots). It skips the lead-in so `at` stays in route metres; add `&leadin=1` to ride it. `&group=new` opens a group ride on it, `?group=<CODE>&sim=1` joins one, `&relay=ws://127.0.0.1:8787` uses a local relay (`relay/`, see [docs/multiplayer.md](docs/multiplayer.md)).
 
 Layout: `src/geo` (projection, DEM, imagery, OSM, routes), `src/engine` (Three.js terrain LOD, road, trees, buildings, rider, sky, camera), `src/devices` (Web Bluetooth), `src/workouts`, `src/training` (plans, ramp test), `src/sim` (physics, session, stats, FIT, storage), `src/audio`, `src/ui`, `electron` (the Mac app: local server, Bluetooth chooser and reconnect, updates, icon). Releasing the app: [docs/releasing.md](docs/releasing.md). What comes next: [docs/ROADMAP.md](docs/ROADMAP.md).
 

@@ -66,10 +66,14 @@ Rides go to Strava by themselves at the end, and friends can connect without cre
 app. Decide first: one Serpentine Strava app with a tiny token service holding its secret (Strava caps new apps
 at a single athlete until it approves more), or keep "bring your own app" for segments and add upload only.
 
-## 1.3: ride with friends
+## 1.1: ride with friends
 
-The multiplayer plan: friends' rides as ghosts (share a ride file, it rides with you), then live rooms (a small
-relay, e.g. Cloudflare Durable Objects) with group rides and races. Needs 1.1's clock fix.
+- [x] **Group rides** (2026-11-21): a room per five-letter code on a Cloudflare relay (`relay/`, one Durable Object
+  per room), the leader's route for everyone, a waiting room and one countdown, late riders start next to the
+  group, kits, name tags with W/kg, gaps, minimap dots and drafting. Details and how to run the relay:
+  [multiplayer.md](multiplayer.md). Brought forward from 1.3 on Chris's "I need a multiplayer mode asap", with
+  1.1's clock fix (from the island branch) in the same release.
+- Next: races with a finish and results, keep-together for different FTPs, group workouts, ride files as ghosts.
 
 ## One world: Serpentine Island
 

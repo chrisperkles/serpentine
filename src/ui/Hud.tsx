@@ -10,6 +10,8 @@ import { fmtTime, gradeColor, int, km, zoneColor } from './format.ts';
 import { useCanvas, useHub, useSession } from './hooks.ts';
 import { drawProfile } from './profile.ts';
 import { WorkoutChart } from './WorkoutChart.tsx';
+import type { GroupRide } from '../net/group.ts';
+import { GroupPanel, GroupStartOverlay } from './GroupHud.tsx';
 
 export function Hud({
   session,
@@ -23,6 +25,9 @@ export function Hud({
   upNext,
   onNextNow,
   onStay,
+  group,
+  groupStart,
+  onBegin,
 }: {
   session: RideSession;
   engine: Engine;
@@ -37,6 +42,11 @@ export function Hud({
   upNext: { name: string; until: number } | null;
   onNextNow: () => void;
   onStay: () => void;
+  /** A group ride, or null riding alone. */
+  group: GroupRide | null;
+  groupStart: { late: boolean; nearGroup: boolean };
+  /** Space / A before the start (App: group-aware). */
+  onBegin: () => void;
 }) {
   const st = useSession(session);
   const { controllable, devices } = useHub();
@@ -47,8 +57,9 @@ export function Hud({
   const [hidden, setHidden] = useState(false);
   const [confirmEnd, setConfirmEnd] = useState(false);
   // read by the key and button handlers, which are bound once per ride
-  const next = useRef({ upNext, onNextNow, onStay });
-  next.current = { upNext, onNextNow, onStay };
+  const next = useRef({ upNext, onNextNow, onStay, onBegin });
+  next.current = { upNext, onNextNow, onStay, onBegin };
+  const [nearGroup, setNearGroup] = useState(groupStart.nearGroup);
 
   const profile = useMemo(() => {
     const dist = new Float32Array(route.n);
@@ -74,10 +85,8 @@ export function Hud({
       switch (e.key) {
         case ' ':
           e.preventDefault();
-          if (s.status === 'ready') {
-            session.begin();
-            setCam('chase');
-          } else session.togglePause();
+          if (s.status === 'ready') next.current.onBegin();
+          else session.togglePause();
           break;
         case 'ArrowLeft':
           e.preventDefault();
@@ -169,10 +178,8 @@ export function Hud({
           cycleCam(1);
           break;
         case 'a':
-          if (s.status === 'ready') {
-            session.begin();
-            setCam('chase');
-          } else session.toggleErg();
+          if (s.status === 'ready') next.current.onBegin();
+          else session.toggleErg();
           break;
         case 'b':
           if (s.status !== 'ready') session.togglePause();
@@ -196,8 +203,12 @@ export function Hud({
     [st.s, st.ghostS, profile],
   );
   const mapRef = useCanvas(
-    (c) => drawMinimap(c, route, st.s, st.ghostS, st.bots.filter((b) => b.active !== false).map((b) => b.s)),
-    [st.s, st.ghostS, st.bots, route],
+    (c) =>
+      drawMinimap(
+        c, route, st.s, st.ghostS, st.bots.filter((b) => b.active !== false).map((b) => b.s),
+        st.riders.filter((r) => !r.stale).map((r) => ({ s: r.s, colour: r.kit })),
+      ),
+    [st.s, st.ghostS, st.bots, st.riders, route],
   );
 
   const ftp = settings.ftp;
@@ -332,6 +343,9 @@ export function Hud({
             )}
           </ul>
         )}
+        {group && (st.status !== 'ready' || groupStart.late) && (
+          <GroupPanel group={group} st={st} myName={settings.name} kit={settings.kit} weight={settings.weight} />
+        )}
         {st.drafting && <div className="drafting">In the draft</div>}
         {st.ghostGap !== null && ghostLabel && (
           <div className={`ghost-gap ${st.ghostGap >= 0 ? 'ahead' : 'behind'}`}>
@@ -422,7 +436,22 @@ export function Hud({
         </div>
       )}
 
-      {st.status === 'ready' && (
+      {st.status === 'ready' && group && (
+        <GroupStartOverlay
+          group={group}
+          late={groupStart.late}
+          nearGroup={nearGroup}
+          onNearGroup={(v) => {
+            groupStart.nearGroup = v;
+            setNearGroup(v);
+          }}
+          onBegin={onBegin}
+          routeName={route.name}
+          noTrainer={noTrainer}
+          kit={settings.kit}
+        />
+      )}
+      {st.status === 'ready' && !group && (
         <div className="overlay ready">
           <p className="o-main">{route.name}</p>
           <p className="o-sub">Start pedalling or press Space</p>
@@ -470,7 +499,9 @@ function Stat({ value, unit, className, style }: { value: string; unit: string; 
 
 const BOT_COLORS = ['#2f7de1', '#f2c230', '#2fb36d', '#9b5de5', '#f15bb5'];
 
-function drawMinimap(c: HTMLCanvasElement, route: Route, s: number, ghost: number | null, bots: number[] = []) {
+function drawMinimap(
+  c: HTMLCanvasElement, route: Route, s: number, ghost: number | null, bots: number[] = [], riders: { s: number; colour: string }[] = [],
+) {
   const dpr = window.devicePixelRatio || 1;
   const w = c.clientWidth;
   const h = c.clientHeight;
@@ -521,5 +552,6 @@ function drawMinimap(c: HTMLCanvasElement, route: Route, s: number, ghost: numbe
   };
   if (ghost !== null) dot(ghost, '#7ff5ff', 4);
   bots.forEach((b, i) => dot(b, BOT_COLORS[i % BOT_COLORS.length], 3.5));
+  riders.forEach((r) => dot(r.s, r.colour, 4));
   dot(s, '#ffc93c', 5.5);
 }

@@ -21,8 +21,10 @@ import type { RideRecord } from '../sim/types.ts';
 import { clearUnfinished, loadUnfinished, saveUnfinished, type UnfinishedRide } from '../sim/unfinished.ts';
 import { loadQueue, NEXT_COUNTDOWN, saveQueue, type QueuedRoute } from '../sim/queue.ts';
 import { LIBRARY } from '../workouts/index.ts';
+import { GroupError, GroupRide, newRiderId } from '../net/group.ts';
+import type { MemberInfo } from '../net/protocol.ts';
 import { fmtTime } from './format.ts';
-import { Home, type HomeTab, type StartRequest } from './Home.tsx';
+import { Home, type GroupRequest, type HomeTab, type StartRequest } from './Home.tsx';
 import { needsPick, takeOpenSettings } from '../sim/profiles.ts';
 import { Hud } from './Hud.tsx';
 import { BatteryWarning, lowBattery } from './BatteryWarning.tsx';
@@ -47,7 +49,18 @@ interface Ride {
   ghostLabel: string | null;
   /** The ride so far, to keep in case the page goes away before it ends. */
   unfinished: () => UnfinishedRide;
+  group: GroupRide | null;
+  /**
+   * Group ride: `late` = the group had started before this ride loaded, so it starts when we pedal, next to the
+   * group unless `nearGroup` was turned off. Otherwise everyone starts together when the host's countdown ends.
+   */
+  groupStart: { late: boolean; nearGroup: boolean };
+  /** Space, the A button: start (or, the host in a group's waiting room, start the countdown). */
+  begin: () => void;
 }
+
+/** Seconds of countdown when the host starts a group ride. */
+const GROUP_COUNTDOWN = 10;
 
 /** Started by a test URL (?ride=…): no unload prompt and no unfinished-ride card. */
 const TEST_START = new URLSearchParams(location.search).has('ride');
@@ -265,15 +278,21 @@ export function App() {
       at?: number; cam?: CameraMode; go?: boolean; leadIn?: boolean; resume?: UnfinishedRide;
       /** Started by the queue: the summary of the last route lists the ones before; a running workout carries on. */
       chained?: boolean; workoutFrom?: number;
+      /** A group ride, connected: the route and lead-in are the room's. */
+      group?: GroupRide;
     },
   ) => {
-    if (!engine) return;
+    const group = opts?.group ?? null;
+    if (!engine) {
+      group?.leave();
+      return;
+    }
     const cfg = settingsRef.current;
     lastStart.current = req;
     setUpNext(null);
     if (!opts?.chained) chainRef.current = [];
     // a new ride from Home keeps an unfinished one in history rather than overwriting it
-    if (!opts) {
+    if (!opts || group) {
       const pending = await loadUnfinished();
       if (pending) {
         try {
@@ -281,6 +300,7 @@ export function App() {
         } catch (e) {
           console.error(e);
           setError(`Could not save your last ride (${(e as Error).message}). It is still kept: try Save ride on Home again.`);
+          group?.leave();
           return;
         }
       }
@@ -354,6 +374,8 @@ export function App() {
       );
       if (resume) session.resume(resume.snapshot);
       else if (opts?.at) session.jump(opts.at);
+      if (group) session.setPeers(() => group.view());
+      const groupStart = { late: !!group && group.started, nearGroup: true };
       (window as unknown as { __session: RideSession }).__session = session;
       let pedal = 0;
       let envT = 0;
@@ -364,18 +386,44 @@ export function App() {
         else if (e === 'segment-pr') audio.segmentEnd(true);
         else if (e === 'segment-end') audio.segmentEnd(false);
         else if (e === 'lap' || e === 'ramp-done') audio.segmentEnd(true);
-        else if (e === 'route-end') offerNext(session);
+        // a group stays on its route
+        else if (e === 'route-end' && !group) offerNext(session);
       });
+      const go = () => {
+        if (session.state.status !== 'ready') return;
+        if (group && groupStart.late && groupStart.nearGroup) {
+          const a = group.anchor();
+          if (a) session.placeAt(a.p);
+        }
+        session.begin();
+        if (engine.rig.mode === 'cinematic') engine.setCameraMode('chase');
+      };
+      const begin = () => {
+        // the waiting room: the host's Space starts the countdown, the others wait for it
+        if (group && !groupStart.late) {
+          if (group.startAt === null && group.isHost) group.start(GROUP_COUNTDOWN);
+          return;
+        }
+        go();
+      };
       // the ride runs on the wall clock; frames only show where it is
       const clock = new SimClock((dt) => {
+        group?.tick(dt);
         if (session.state.status === 'ready') {
-          pedal = (hub.metrics.power ?? 0) > 40 ? pedal + dt : 0;
-          if (pedal > 1.2) {
-            session.begin();
-            if (engine.rig.mode === 'cinematic') engine.setCameraMode('chase');
+          if (group && !groupStart.late) {
+            // everyone who waited sets off when the countdown ends, pedalling or not
+            if (group.started) go();
+          } else {
+            pedal = (hub.metrics.power ?? 0) > 40 ? pedal + dt : 0;
+            if (pedal > 1.2) go();
           }
         }
         session.tick(dt);
+        if (group) {
+          const st = session.state;
+          const moving = st.status === 'riding';
+          group.update({ p: session.progress, v: moving ? st.speed : 0, w: moving ? st.power : 0, c: moving ? st.cadence : 0 });
+        }
       });
       engine.setOnFrame((dt, live) => {
         if (live) clock.sync();
@@ -391,6 +439,7 @@ export function App() {
         engine.ghostS = st.ghostS;
         engine.ghostDir = st.ghostDir;
         engine.bots = st.bots;
+        engine.riders = st.riders;
         envT += dt;
         if (envT > 1) {
           envT = 0;
@@ -409,7 +458,7 @@ export function App() {
           descending: st.grade < -2,
         });
       });
-      if (opts?.go) {
+      if (opts?.go && !group) {
         session.begin();
         engine.setCameraMode(opts.cam ?? 'chase');
       }
@@ -422,15 +471,44 @@ export function App() {
         unfinished: () => ({
           req, leadIn, snapshot: session.snapshot(), record: session.record(), summitTime: session.summitTime, savedAt: Date.now(),
         }),
+        group,
+        groupStart,
+        begin,
       });
       setScreen('ride');
       (window as unknown as { __ready: boolean }).__ready = true;
     } catch (e) {
       console.error(e);
+      group?.leave();
       engine.unloadWorld();
       engine.paused = true;
       setError(`Could not load ${req.route.name}: ${(e as Error).message}`);
       setScreen('home');
+    }
+  };
+
+  /** Who we are to the others in a group ride: name, weight for W/kg, kit colours, and a fresh random id. */
+  const memberInfo = (): MemberInfo => {
+    const c = settingsRef.current;
+    return { id: newRiderId(), name: c.name, weight: c.weight, kit: c.kit, accent: c.accent, bike: c.bike };
+  };
+
+  /** Start a group ride on the chosen route, or join one by its code; the world loads once the room answers. */
+  const startGroup = async (g: GroupRequest): Promise<string | null> => {
+    try {
+      if (g.kind === 'create') {
+        const leadIn = settingsRef.current.leadIn && !!g.req.route.leadIn;
+        const group = await GroupRide.create(memberInfo(), { data: g.req.route, leadIn });
+        await start(g.req, { group, leadIn });
+      } else {
+        const group = await GroupRide.join(g.code, memberInfo());
+        const route = group.routeData();
+        if (!route) throw new GroupError('bad');
+        await start({ route, workout: g.workout, holdWatts: g.holdWatts }, { group, leadIn: group.route!.leadIn });
+      }
+      return null;
+    } catch (e) {
+      return e instanceof GroupError ? e.message : `Could not start the group ride: ${(e as Error).message}`;
     }
   };
 
@@ -487,6 +565,8 @@ export function App() {
 
   const end = async () => {
     if (!ride || !engine) return;
+    ride.group?.leave();
+    ride.session.setPeers(null);
     setUpNext(null);
     const rec = ride.session.finish();
     const summitTime = ride.session.summitTime;
@@ -531,7 +611,8 @@ export function App() {
     if (!engine) return;
     const q = new URLSearchParams(location.search);
     const id = q.get('ride');
-    if (!id) return;
+    const code = q.get('group');
+    if (!id && !code) return;
     if (q.get('sim')) {
       hub.setSimulator(true);
       hub.simulator.setEffort(Number(q.get('watts') ?? 230));
@@ -540,8 +621,19 @@ export function App() {
     if (q.get('time')) settingsRef.current = { ...settingsRef.current, time: q.get('time')! };
     if (q.get('bots')) settingsRef.current = { ...settingsRef.current, bots: q.get('bots')!.split(',').map(Number) };
     void (async () => {
-      const data = (await (await fetch(`/routes/${id}.json`)).json()) as RouteData;
       const workout = LIBRARY.find((w) => w.id === q.get('workout')) ?? null;
+      // ?group=new&ride=<preset>: host a group ride; ?group=<CODE>: join one
+      if (code && code !== 'new') {
+        const err = await startGroup({ kind: 'join', code, workout, holdWatts: null });
+        if (err) setError(err);
+        return;
+      }
+      const data = (await (await fetch(`/routes/${id}.json`)).json()) as RouteData;
+      if (code === 'new') {
+        const err = await startGroup({ kind: 'create', req: { route: { ...data, source: 'brouter' }, workout, holdWatts: null } });
+        if (err) setError(err);
+        return;
+      }
       await start(
         { route: { ...data, source: 'brouter' }, workout, holdWatts: q.get('hold') ? Number(q.get('hold')) : null },
         { at: Number(q.get('at') ?? 0), cam: (q.get('cam') as CameraMode) ?? 'chase', go: q.get('go') !== '0', leadIn: q.get('leadin') === '1' },
@@ -595,6 +687,7 @@ export function App() {
             settings={settings}
             onSettings={updateSettings}
             onStart={(r) => void start(r)}
+            onGroup={startGroup}
             tab={homeTab}
             onTab={setHomeTab}
             onOpenRide={(id) => void openRide(id)}
@@ -628,6 +721,9 @@ export function App() {
           upNext={upNext?.session === ride.session ? { name: upNext.route.name, until: upNext.until } : null}
           onNextNow={() => upNext && void goNext(upNext, lastStart.current?.holdWatts ?? null)}
           onStay={() => setUpNext(null)}
+          group={ride.group}
+          groupStart={ride.groupStart}
+          onBegin={ride.begin}
         />
       )}
       {screen === 'ride' && <BatteryWarning battery={battery} audio={audio} />}

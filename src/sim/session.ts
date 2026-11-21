@@ -12,6 +12,7 @@ import { normalizedPower } from './stats.ts';
 import type { RideRecord, RideSample } from './types.ts';
 import type { Segment } from './segments.ts';
 import { RAMP_TEST_ID, ftpFromRamp, rampFailure } from '../training/rampTest.ts';
+import type { PeerView } from '../net/group.ts';
 
 export interface RiderSettings {
   ftp: number;
@@ -61,6 +62,26 @@ export interface BotState {
   segStart?: number;
   segEnd?: number;
   active?: boolean;
+}
+
+/** Someone else in a group ride, placed on our copy of the route (net/group.ts). */
+export interface RemoteRider {
+  id: string;
+  name: string;
+  kit: string;
+  accent: string;
+  bike: string;
+  s: number;
+  dir: 1 | -1;
+  speed: number;
+  power: number;
+  cadence: number;
+  wkg: number;
+  /** Metres ahead along the route (negative = behind), laps and turnarounds included. */
+  gap: number;
+  /** No position for a while: hidden, and nobody drafts them. */
+  stale: boolean;
+  host: boolean;
 }
 
 export interface LiveSegment {
@@ -129,6 +150,8 @@ export interface LiveState {
   bias: number;
   segment: LiveSegment | null;
   bots: BotState[];
+  /** The others in a group ride. */
+  riders: RemoteRider[];
   drafting: boolean;
   /** Estimated FTP once a ramp test ends. */
   rampFtp: number | null;
@@ -184,6 +207,10 @@ export class RideSession {
   /** Gradient last handed to the trainer, eased for momentum. */
   private simGrade: number | null = null;
   private st: LiveState;
+  /** Group ride: where the others are. */
+  private peers: (() => PeerView[]) | null = null;
+  /** Group ride joined late: we started next to the group, this far along the route. */
+  private progressOffset = 0;
   readonly drivetrain: Drivetrain;
   /** Virtual gears of the selected drivetrain, easiest first. */
   readonly gears: Gear[];
@@ -215,6 +242,7 @@ export class RideSession {
       bias: 1,
       segment: null,
       bots: (cfg.bots ?? []).map((wkg) => ({ wkg, s: 0, dir: 1, speed: 0, distance: 0, gap: 0 })),
+      riders: [],
       drafting: false,
       rampFtp: null,
     };
@@ -281,6 +309,55 @@ export class RideSession {
 
   get state(): LiveState {
     return this.st;
+  }
+
+  /**
+   * Metres along the route from its start, turnarounds and laps included: what a group ride compares. The same
+   * as `distance` unless the ride started next to the group (placeAt).
+   */
+  get progress(): number {
+    return this.st.distance + this.progressOffset;
+  }
+
+  /** A group ride: the others, read every tick. */
+  setPeers(fn: (() => PeerView[]) | null) {
+    this.peers = fn;
+    if (!fn) this.st.riders = [];
+  }
+
+  /**
+   * Before the start: begin `p` metres along the route instead of at its start (a late rider joins the group).
+   * The ride itself still counts from zero; only the place is different, so the ghost of the best ride goes.
+   */
+  placeAt(p: number) {
+    if (this.st.status !== 'ready' || this.start) return;
+    const pos = positionAt(this.route, Math.max(0, p));
+    const st = this.st;
+    this.progressOffset = Math.max(0, p) - st.distance;
+    st.s = pos.s;
+    st.dir = pos.dir;
+    const here = pointAt(this.route, st.s, tmp);
+    st.grade = here.grade * st.dir;
+    st.ele = here.ele;
+    this.gainRef = here.ele;
+    this.ghost = null;
+    st.ghostS = null;
+    st.ghostGap = null;
+    st.bots = st.bots.map((b) => (b.segmentId ? b : { ...b, s: st.s, dir: st.dir }));
+    this.updateRiders();
+    this.emit();
+  }
+
+  private updateRiders() {
+    if (!this.peers) return;
+    const me = this.progress;
+    this.st.riders = this.peers().map((v) => {
+      const { s, dir } = positionAt(this.route, v.p);
+      return {
+        id: v.id, name: v.name, kit: v.kit, accent: v.accent, bike: v.bike, s, dir, speed: v.speed, power: v.power,
+        cadence: v.cadence, wkg: v.power / v.weight, gap: v.p - me, stale: v.stale, host: v.host,
+      };
+    });
   }
 
   private eventListeners = new Set<(e: SessionEvent) => void>();
@@ -375,6 +452,8 @@ export class RideSession {
 
   tick(dt: number) {
     const st = this.st;
+    // the others ride on while we wait at the start or pause
+    this.updateRiders();
     if (st.status !== 'riding') return;
     const m = this.hub.metrics;
     const power = m.power ?? 0;
@@ -386,11 +465,12 @@ export class RideSession {
     st.elapsed += dt;
     st.kj += (power * dt) / 1000;
 
-    // physics along the route (drafting a pacer cuts drag by 30 %)
+    // physics along the route (drafting a pacer or a rider of the group cuts drag by 30 %)
     const route = this.route;
     const p = pointAt(route, st.s, tmp);
     const grade = this.feltGrade(st.s, p.grade * st.dir);
-    st.drafting = st.bots.some((b) => !b.segmentId && b.gap > 0.5 && b.gap < 7 && b.dir === st.dir);
+    const behind = (gap: number, dir: 1 | -1) => gap > 0.5 && gap < 7 && dir === st.dir;
+    st.drafting = st.bots.some((b) => !b.segmentId && behind(b.gap, b.dir)) || st.riders.some((r) => !r.stale && behind(r.gap, r.dir));
     const phys = st.drafting ? { ...this.physics, cda: this.physics.cda * 0.7 } : this.physics;
     const prevS = st.s;
     let v = stepSpeed(st.speed, power, grade, p.ele, dt, phys);

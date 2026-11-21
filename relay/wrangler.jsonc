@@ -1,0 +1,12 @@
+{
+  // Group rides for Serpentine (docs/multiplayer.md). Deploy: npm run deploy (needs `npx wrangler login` once).
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "serpentine-relay",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-10-25",
+  "durable_objects": {
+    "bindings": [{ "name": "ROOMS", "class_name": "Room" }]
+  },
+  // SQLite-backed: the kind the Workers free plan includes
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["Room"] }]
+}

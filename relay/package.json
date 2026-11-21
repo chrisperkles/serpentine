@@ -1,0 +1,16 @@
+{
+  "name": "serpentine-relay",
+  "private": true,
+  "description": "Group rides for Serpentine: one Cloudflare Durable Object per room passes positions between riders.",
+  "type": "module",
+  "scripts": {
+    "dev": "wrangler dev --port 8787",
+    "deploy": "wrangler deploy",
+    "types": "wrangler types",
+    "typecheck": "wrangler types && tsc --noEmit"
+  },
+  "devDependencies": {
+    "typescript": "^7.0.2",
+    "wrangler": "4.156.2"
+  }
+}

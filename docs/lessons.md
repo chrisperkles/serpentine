@@ -255,6 +255,10 @@ symptom (what it looked like), cause, fix and where. Newest at the bottom of eac
   24 at that height, three groups (effort top left, climb top right, ride totals at the bottom) on translucent
   panels so labels hold against a bright sky; the big gradient sign gave way to a gradient figure with a colour
   underline, and VAM (30 s) joined the climb group. Where: `Hud.tsx`, `.hud` rules in `styles.css`, `session.ts`.
+- **A friend 8 m ahead showed 4 m ahead, and they saw us 12 m behind.** Each rider's position was eased towards
+  where they were (tau 0.5 s), which trails a moving target by speed × tau. Fix: draw them where dead reckoning puts
+  them now (last position + speed × (time since + half a round trip)) and ease only the correction a new position
+  makes. `scripts/e2e-group.mjs` checks both views against the real gap. Where: `src/net/group.ts` `reckon`, `tick`.
 - **Below 10 fps the ride ran in slow motion, and a hidden tab stopped it.** Drawn frames drove the ride and a frame
   counted 0.1 s at most. Fix: the ride runs on the wall clock in steps of at most 50 ms, from the render loop and
   from a 250 ms timer while frames don't come; a gap of more than 65 s (a Mac that slept) counts as 65 s. Capture
