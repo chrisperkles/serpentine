@@ -420,3 +420,39 @@ symptom (what it looked like), cause, fix and where. Newest at the bottom of eac
 - **Firewood stacks stood in front of Sydney houses.** `Props.build` put one beside 32 % of `house` footprints unless
   the biome was `streets`; `suburb` now skips them too. Where: `Props.ts`.
 
+- **City buildings were window grids: the detail was shader-only and vanished at 50 to 400 m.** Reviewers scored "built
+  environment" 3 of 5 (Central Park) and 2 of 5 (Vienna): no cornice, base, tank or crown from a distance. A window
+  pattern is under a pixel at 300 m; what reads is silhouette and relief that catches light. Fix: real geometry for the
+  big moves, through the merged `Builder` buffers. Manhattan (`addManhattanBlock`): a different stone at the base
+  under a projecting belt course (the shader reads the base height from the new per-vertex `aux`, so colour and
+  grooves match the geometry), corner piers and shallow bays, a cornice scaled by height (up to 1 m proud with a
+  fillet), setback terraces with parapets on tall plain blocks, copper mansards with dormers, stone setback towers
+  ending in a lantern and a pyramid, twin crown towers on big pre-war houses, bigger bulkheads and tanks. Vienna: a
+  rusticated base and mezzanine in a greyer stone with mouldings at the joints and a balcony band, centre risalits and
+  corner bays, a 1.9x cornice, dormers as geometry on mansards and hips, corner turrets with small domes, bigger
+  chimneys, a balustrade with statues and a pediment on monuments, skylights and a crest on big decks. Where:
+  `Buildings.ts` (`addManhattanBlock`, `roofEquipment`, `crown`, `twinTowers`, `cornice` scale, `Builder.aux`),
+  `ViennaBlock.ts` (`ledge`, `quoins`, `projection`, `dormers`, `balustrade`, `deckDetail`, `turret`).
+- **Geometry and shader must agree on storey heights.** The shader drew its base, mezzanine and piano nobile from
+  per-building hashes, so a base coloured in geometry would never line up. Fix: the JS side picks the heights and hands
+  the top of the base (Manhattan) or of the mezzanine (Vienna) to the shader in `aux`; a negative `aux` marks an upper
+  tier or a turret with no street floor. Anything that colours part of a wall in geometry needs the same trick.
+- **A concave footprint hung a dark plate beside the roof.** `insetRing` mitred a roof's inset ring out of a concave
+  corner and the flat deck was triangulated from it ("a dark pointed cap reads as a pyramid" in the Vienna review).
+  Fix: an inset is refused unless every point lies inside the footprint and every edge still runs the way its wall does;
+  the roof falls back to a flat deck. Where: `ViennaBlock.ts` `insetRing`.
+- **A 100 m wide gabled roof was one tiled plane.** The University is tagged gabled with a 1 m rise: a ridge roof over
+  50 m of half-width. Fix: above 900 m² a roof is a steep outer slope, a gentle second slope and a deck with skylight
+  lanterns and a lead crest, whatever the tag says. Where: `ViennaBlock.ts` roof section, `deckDetail`.
+- **Ledges round every edge of an outline cost more than the walls.** Chamfered and curved corners are runs of
+  half-metre edges; a cornice (ten triangles) on each took Central Park's buildings from 1.4 M to 2.4 M triangles.
+  Fix: no ledge on edges under 1.6 m, no fillet on houses under 30 m, belts and corner piers only on outlines with
+  few edges, soffits dropped on belts, dormers capped per roof. Measure with `engine.world.buildings` (sum of mesh
+  position counts / 3): Central Park 1.41 M to 1.71 M, Vienna 0.48 M to 0.76 M.
+- **Parts of one tower must not get different characters.** A tower mapped as a stack of 3D parts is built part by part
+  with a per-part seed. Fix: the character (pale concrete grid, dark glass, silvery glass, 1960s dark box) of a tagged
+  glass tower comes from its tagged colour, which the parts share; untagged towers use a hash. Where: `Buildings.ts`
+  `addManhattanBlock`, curtain-wall branch of the facade shader (`vAux` 1 to 4).
+- **A custom camera is the way to look at a facade.** The `chase`, `side` and `drone` cams look along the road, so the
+  buildings are a strip at the edge. `engine.cameraOverride` replaces the camera each frame: a capture script that sets
+  it from route-relative offsets (along, right, up) reviews roof lines and skylines properly.

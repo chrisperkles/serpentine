@@ -55,7 +55,7 @@ needed before any score counts as final.
 
 - Tree models are the Alpine beech in different sizes; elm (vase shape) and plane (mottled trunk) would read as New York.
 - Ground-floor shop fronts, awnings, canopies at the apartment-house doors: none.
-- The far glass towers are flat tinted slabs; no reflections of neighbours.
+- The far glass towers have a character each now (concrete grid, dark, silver stepped, 1960s box) and crowns, but no reflections of neighbours. Twin towers on the big CPW houses are generated from footprint and height, not from the real buildings (OSM maps San Remo, Majestic etc. as single outlines).
 - The route's own bridges and underpasses are not modelled.
 
 ## Feedback log

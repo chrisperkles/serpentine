@@ -10,7 +10,7 @@ import type { RouteIndex } from '../geo/route.ts';
 import { patchMaterial } from './atmosphere.ts';
 import { ALPINE, type Biome } from './biome.ts';
 import { WorldGroup } from './dispose.ts';
-import { addViennaBlock, VIENNA_ROOFS, VIENNA_WALLS } from './ViennaBlock.ts';
+import { addViennaBlock, insetRing, ledge, outNormals, projection, quoins, VIENNA_ROOFS, VIENNA_WALLS, VROOF } from './ViennaBlock.ts';
 
 const BUCKET = 600;
 
@@ -38,7 +38,7 @@ const PROV_ROOFS = [srgb(0.74, 0.5, 0.38), srgb(0.68, 0.44, 0.32), srgb(0.78, 0.
 // Manhattan around Central Park: pre-war apartment houses in limestone, buff, red and brown brick,
 // white-brick post-war slabs, brownstone row houses on the side streets; glass towers in Midtown
 const NYC_MASONRY = [
-  srgb(0.8, 0.77, 0.7), srgb(0.76, 0.67, 0.54), srgb(0.72, 0.62, 0.5), srgb(0.56, 0.32, 0.25), srgb(0.47, 0.34, 0.28),
+  srgb(0.8, 0.77, 0.7), srgb(0.76, 0.67, 0.54), srgb(0.72, 0.62, 0.5), srgb(0.5, 0.31, 0.25), srgb(0.44, 0.33, 0.28),
   srgb(0.85, 0.84, 0.8), srgb(0.66, 0.64, 0.6), srgb(0.7, 0.55, 0.42),
 ];
 const NYC_ROWHOUSE = [srgb(0.43, 0.3, 0.25), srgb(0.5, 0.29, 0.23), srgb(0.38, 0.27, 0.23), srgb(0.72, 0.68, 0.6)];
@@ -124,8 +124,14 @@ export class Builder {
   surf: number[] = [];
   base: number[] = [];
   top: number[] = [];
+  /** Per-vertex extra the facade shader reads (`aux`): Manhattan masonry: height of the stone base (negative: an upper block with no street floor); Vienna: top of the mezzanine; curtain walls: the tower's character. */
+  aux: number[] = [];
   private y0 = 0;
   private y1 = 0;
+  private a = 0;
+  setAux(v: number) {
+    this.a = v;
+  }
   /** Ground level and roof level of the block being built (the shader counts floors and draws the cornice from them). */
   setBase(y: number, top = y) {
     this.y0 = y;
@@ -141,6 +147,7 @@ export class Builder {
       this.surf.push(s);
       this.base.push(this.y0);
       this.top.push(this.y1);
+      this.aux.push(this.a);
     }
   }
   /** Upright cylinder with a cone cap (a rooftop water tank). */
@@ -193,7 +200,7 @@ function addBuilding(
   bld: Building, b: Builder, heightAt: (x: number, z: number) => number, seed: number, ox: number, oz: number, style: Style,
 ) {
   if (style.vienna) return addViennaBlock(bld, b, heightAt, seed, ox, oz);
-  if (style.city) return addCityBlock(bld, b, heightAt, seed, ox, oz);
+  if (style.city) return addManhattanBlock(bld, b, heightAt, seed, ox, oz);
   if (style.sydney) return addSydneyBuilding(bld, b, heightAt, seed, ox, oz);
   const med = style.med;
   const ring = simplify(bld.ring);
@@ -533,29 +540,472 @@ function addCityBlock(bld: Building, b: Builder, heightAt: (x: number, z: number
   }
 }
 
+// ---- Manhattan ----
+
+const NYC_COPPER = [srgb(0.2, 0.36, 0.3), srgb(0.24, 0.4, 0.34), srgb(0.28, 0.3, 0.32)];
+const STEEL_LEGS = srgb(0.2, 0.2, 0.21);
+const TANK_STAVES = [srgb(0.36, 0.27, 0.2), srgb(0.3, 0.22, 0.16), srgb(0.42, 0.32, 0.23)];
+
+function ringArea(r: THREE.Vector2[]): number {
+  let a = 0;
+  for (let i = 0; i < r.length; i++) {
+    const p = r[i], q = r[(i + 1) % r.length];
+    a += p.x * q.y - q.x * p.y;
+  }
+  return Math.abs(a) / 2;
+}
+
+function ringCentroid(r: THREE.Vector2[]): THREE.Vector2 {
+  let cx = 0, cz = 0, a = 0;
+  for (let i = 0; i < r.length; i++) {
+    const p = r[i], q = r[(i + 1) % r.length];
+    const w = p.x * q.y - q.x * p.y;
+    a += w;
+    cx += (p.x + q.x) * w;
+    cz += (p.y + q.y) * w;
+  }
+  return Math.abs(a) < 1e-6 ? r[0].clone() : new THREE.Vector2(cx / (3 * a), cz / (3 * a));
+}
+
+/** The long axis of a footprint and its extent along and across it. */
+function orientedBox(r: THREE.Vector2[]) {
+  let best = 0;
+  let dir = new THREE.Vector2(1, 0);
+  for (let i = 0; i < r.length; i++) {
+    const e = new THREE.Vector2().subVectors(r[(i + 1) % r.length], r[i]);
+    if (e.length() > best) { best = e.length(); dir = e.clone().normalize(); }
+  }
+  const perp = new THREE.Vector2(-dir.y, dir.x);
+  let u0 = Infinity, u1 = -Infinity, v0 = Infinity, v1 = -Infinity;
+  for (const p of r) {
+    const u = p.x * dir.x + p.y * dir.y, v = p.x * perp.x + p.y * perp.y;
+    u0 = Math.min(u0, u); u1 = Math.max(u1, u); v0 = Math.min(v0, v); v1 = Math.max(v1, v);
+  }
+  return { dir, perp, u0, u1, v0, v1 };
+}
+
+/** Walls round a footprint from y0 to y1; each faces away from a point just inside it. */
+function wallsAround(b: Builder, ring: THREE.Vector2[], sgn: number, y0: number, y1: number, col: THREE.Color, surf: number) {
+  const nor = outNormals(ring, sgn);
+  for (let i = 0; i < ring.length; i++) {
+    const p = ring[i], q = ring[(i + 1) % ring.length];
+    if (p.distanceTo(q) < 1e-3) continue;
+    const inside = new THREE.Vector3((p.x + q.x) / 2 - nor[i].x * 30, (y0 + y1) / 2, (p.y + q.y) / 2 - nor[i].y * 30);
+    b.quad(new THREE.Vector3(p.x, y0, p.y), new THREE.Vector3(q.x, y0, q.y), new THREE.Vector3(q.x, y1, q.y), new THREE.Vector3(p.x, y1, p.y), col, surf, inside);
+  }
+}
+
+/** A flat roof deck over a footprint, facing up. */
+function deckOver(b: Builder, ring: THREE.Vector2[], y: number, col: THREE.Color) {
+  const c = ringCentroid(ring);
+  const low = new THREE.Vector3(c.x, y - 50, c.y);
+  for (const [i, j, k] of THREE.ShapeUtils.triangulateShape(ring.map((p) => p.clone()), [])) {
+    b.tri(new THREE.Vector3(ring[i].x, y, ring[i].y), new THREE.Vector3(ring[j].x, y, ring[j].y), new THREE.Vector3(ring[k].x, y, ring[k].y), col, TRIM, low);
+  }
+}
+
+/** A pyramid (or lantern) over a footprint, roofed in tile courses like the Vienna roofs. */
+function pyramidOver(b: Builder, ring: THREE.Vector2[], y: number, rise: number, col: THREE.Color) {
+  const c = ringCentroid(ring);
+  const apex = new THREE.Vector3(c.x, y + rise, c.y);
+  const low = new THREE.Vector3(c.x, y - 50, c.y);
+  for (let i = 0; i < ring.length; i++) {
+    const p = ring[i], q = ring[(i + 1) % ring.length];
+    b.tri(new THREE.Vector3(p.x, y, p.y), new THREE.Vector3(q.x, y, q.y), apex, col, VROOF, low);
+  }
+}
+
+/** A steel tank leg: a three-sided post (no top or bottom), cheap and thin enough to read as a frame. */
+function leg(b: Builder, x: number, z: number, y0: number, y1: number) {
+  const k = [[0.14, 0], [-0.07, 0.12], [-0.07, -0.12]];
+  const c = new THREE.Vector3(x, (y0 + y1) / 2, z);
+  for (let i = 0; i < 3; i++) {
+    const [ax, az] = k[i], [bx, bz] = k[(i + 1) % 3];
+    b.quad(new THREE.Vector3(x + ax, y0, z + az), new THREE.Vector3(x + bx, y0, z + bz), new THREE.Vector3(x + bx, y1, z + bz), new THREE.Vector3(x + ax, y1, z + az), STEEL_LEGS, TRIM, c);
+  }
+}
+
+/**
+ * What stands on a New York roof, big enough to break the roof line at 300 m: the stair and lift bulkhead and the
+ * wooden water tank on its steel frame (every building over six floors needs one), a second pair on a big roof.
+ */
+function roofEquipment(b: Builder, ring: THREE.Vector2[], deck: number, seed: number, height: number, wall: THREE.Color, tanks: boolean) {
+  const area = ringArea(ring);
+  if (area < 150 || height < 14) return;
+  const c = ringCentroid(ring);
+  const { dir, perp } = orientedBox(ring);
+  const span = Math.sqrt(area);
+  const spot = (du: number, dv: number, clearance: number) => {
+    const x = c.x + dir.x * du + perp.x * dv, z = c.y + dir.y * du + perp.y * dv;
+    for (const [ax, az] of [[0, 0], [clearance, 0], [-clearance, 0], [0, clearance], [0, -clearance]]) {
+      if (!pointInRing(ring, x + ax, z + az)) return null;
+    }
+    return [x, z] as const;
+  };
+  const stone = wall.clone().multiplyScalar(0.85);
+  const nB = area > 900 ? 2 : 1;
+  for (let k = 0; k < nB; k++) {
+    const s = spot((rnd(seed + 31 + k) - 0.5) * span * 0.3 + (k ? span * 0.22 : 0), (rnd(seed + 32 + k) - 0.5) * span * 0.3, 4.5);
+    if (!s) continue;
+    const w = Math.min(4 + rnd(seed + 33) * 2.4, span * 0.25), d = Math.min(3 + rnd(seed + 34) * 1.6, span * 0.18);
+    const h = 3.8 + rnd(seed + 35) * 2;
+    b.box(s[0], s[1], dir, w, d, deck, deck + h, stone, TRIM);
+  }
+  if (!tanks || height < 20 || height > 110) return;
+  const nT = area > 700 ? 2 : 1;
+  for (let k = 0; k < nT; k++) {
+    if (rnd(seed + 36 + k * 5) < 0.18) continue;
+    const s = spot((k ? -1 : 1) * span * 0.26 * (0.8 + rnd(seed + 37)), (rnd(seed + 38 + k) - 0.5) * span * 0.34, 3.6);
+    if (!s) continue;
+    const r = 2.1 + rnd(seed + 39 + k) * 0.7;
+    const y = deck + 3.2 + rnd(seed + 40 + k) * 1.6;
+    for (const [u, v] of [[-1.4, -1.4], [1.4, -1.4], [1.4, 1.4], [-1.4, 1.4]]) leg(b, s[0] + dir.x * u + perp.x * v, s[1] + dir.y * u + perp.y * v, deck, y);
+    b.tank(s[0], s[1], r, y, y + 4.4, 1.7, TANK_STAVES[Math.floor(rnd(seed + 41 + k) * 3)], WOOD);
+  }
+}
+
+// towers: a character per tower, from its tags, size and a hash (aux of the CURTAIN surface tells the shader which)
+const T_CURTAIN = 0, T_CONCRETE = 1, T_DARK = 2, T_SILVER = 3, T_BOX = 4;
+const TOWER_TONE: Record<number, THREE.Color> = {
+  [T_CONCRETE]: srgb(0.82, 0.8, 0.75), [T_DARK]: srgb(0.1, 0.13, 0.17), [T_SILVER]: srgb(0.62, 0.69, 0.72), [T_BOX]: srgb(0.2, 0.17, 0.15),
+};
+
+/**
+ * A Manhattan block or one 3D part of it. Pre-war apartment houses: a different stone at the base under a moulding,
+ * corner piers and shallow bays, a cornice that throws a shadow, setback terraces on tall plain blocks, copper
+ * mansards, twin crown towers on the big houses, a water tank and a bulkhead you can see from the street.
+ * Glass towers: a character each (pale concrete grid, dark glass, silvery glass with a stepped top, 1960s dark
+ * box) and a crown. Parts carry their own shape: no setbacks added to them.
+ */
+function addManhattanBlock(bld: Building, b: Builder, heightAt: (x: number, z: number) => number, seed: number, ox: number, oz: number) {
+  const ring = simplify(bld.ring);
+  if (ring.length < 3) return;
+  let gmin = Infinity, gmax = -Infinity;
+  for (const p of ring) {
+    const h = heightAt(p.x, p.y);
+    if (!Number.isFinite(h)) return;
+    gmin = Math.min(gmin, h);
+    gmax = Math.max(gmax, h);
+  }
+  const height = Math.max(bld.height, 3.5);
+  const top = gmax + height;
+  const bottom = bld.minHeight !== undefined ? gmax + Math.min(bld.minHeight, height - 1) : gmin - 0.6;
+  const local = ring.map((p) => new THREE.Vector2(p.x - ox, p.y - oz));
+  let sa = 0;
+  for (let i = 0; i < local.length; i++) {
+    const p = local[i], q = local[(i + 1) % local.length];
+    sa += p.x * q.y - q.x * p.y;
+  }
+  if (Math.abs(sa) < 2) return;
+  const sgn = Math.sign(sa);
+  const area = Math.abs(sa) / 2;
+  const cen = ringCentroid(local);
+  const mat = bld.material;
+  const tallRule = height > 125 || ((bld.kind === 'office' || bld.kind === 'commercial') && height > 48 && rnd(seed + 2) > 0.45);
+  const glass = mat === 'glass' || mat === 'metal' || mat === 'steel' || (!mat && !bld.wallColour && tallRule);
+  const row = !bld.part && height < 21 && area < 420;
+  const set = glass ? NYC_GLASS : row ? NYC_ROWHOUSE : NYC_MASONRY;
+  const wall = parseColour(bld.wallColour, set[Math.floor(rnd(seed) * set.length)]).clone();
+  const hsl = { h: 0, s: 0, l: 0 };
+
+  // --- a character for glass towers
+  let char = T_CURTAIN;
+  if (glass && height > 60) {
+    wall.getHSL(hsl);
+    const r = rnd(seed + 60);
+    if (bld.wallColour) {
+      // parts of one tower share their tag: let the colour pick the character, so the stack stays one tower
+      const l = hsl.l;
+      char = l < 0.16 ? (height > 150 ? T_DARK : T_BOX) : l > 0.58 ? (height > 180 && area < 1500 ? T_CONCRETE : T_SILVER) : T_CURTAIN;
+    } else if (height > 200 && area < 1600) char = r < 0.34 ? T_CONCRETE : r < 0.67 ? T_DARK : T_SILVER;
+    else char = r < 0.26 ? T_SILVER : r < 0.5 ? T_DARK : r < 0.68 ? T_BOX : T_CURTAIN;
+  }
+  if (glass || !bld.wallColour) {
+    // tagged colours are often pure black or white: keep them inside what stone, brick and glass can be
+    wall.getHSL(hsl);
+    const tone = TOWER_TONE[char];
+    if (tone && !bld.wallColour) wall.copy(tone);
+    else wall.setHSL(hsl.h, Math.min(hsl.s, 0.55), Math.min(Math.max(hsl.l, glass ? 0.02 : 0.05), 0.62));
+  } else {
+    // OSM wall colours on masonry are often garish (a lime-yellow block on Central Park West): pull the hue
+    // towards brick and sandstone, keep only a loose memory of it, and cap saturation and lightness
+    wall.getHSL(hsl, THREE.SRGBColorSpace);
+    const dh = ((hsl.h - 0.07 + 1.5) % 1) - 0.5;
+    const h = 0.07 + Math.max(-0.05, Math.min(0.05, dh * 0.4));
+    wall.setHSL(h, Math.min(hsl.s * 0.8, 0.3), Math.min(Math.max(hsl.l, 0.3), 0.72), THREE.SRGBColorSpace);
+  }
+  const surf = glass ? CURTAIN : MASONRY;
+  const pyramid = bld.roof === 'pyramidal';
+  const rise = pyramid ? Math.min(bld.roofHeight ?? Math.min(Math.sqrt(area) * 0.6, 9), height - 1) : 0;
+  const wallTop = top - rise;
+  const roofCol = parseColour(bld.roofColour, NYC_ROOFS[Math.floor(rnd(seed + 7) * NYC_ROOFS.length)]);
+  const span = Math.sqrt(area);
+
+  // --- setbacks: a plan of tiers (fraction of the height where the tier ends, inset of the next one)
+  const plan: [number, number][] = [];
+  if (!bld.part && !pyramid && bld.minHeight === undefined) {
+    if (!glass && height > 52 && area > 480 && rnd(seed + 50) < 0.55) {
+      const s = Math.min(6, Math.max(2.6, span * 0.075));
+      if (height > 110) plan.push([0.6, s], [0.8, s * 1.1]);
+      else plan.push([0.76, s]);
+    } else if (char === T_SILVER) {
+      const s = Math.min(4, Math.max(1.8, span * 0.05));
+      plan.push([0.86, s], [0.94, s]);
+    } else if (char === T_DARK) plan.push([0.95, Math.min(7, Math.max(2.5, span * 0.12))]);
+  }
+  type Tier = { ring: THREE.Vector2[]; y0: number; y1: number };
+  const tiers: Tier[] = [];
+  let cur = local, yPrev = bottom;
+  for (const [f, d] of plan) {
+    const nxt = insetRing(cur, sgn, d);
+    if (!nxt) break;
+    const y1 = gmax + height * f;
+    tiers.push({ ring: cur, y0: yPrev, y1 });
+    yPrev = y1 - 0.9;
+    cur = nxt;
+  }
+  tiers.push({ ring: cur, y0: yPrev, y1: wallTop });
+  const multi = tiers.length > 1;
+  const attic = (t: number) => (t > 0 ? -1 : 0);
+
+  // --- base colour and heights (masonry): the stone base is a clearly different stone from the shaft
+  const lum = wall.r * 0.3 + wall.g * 0.55 + wall.b * 0.15;
+  const baseCol = lum > 0.28 ? wall.clone().lerp(srgb(0.45, 0.42, 0.38), 0.55) : wall.clone().lerp(srgb(0.82, 0.78, 0.7), 0.6);
+  const stoneLight = wall.clone().lerp(srgb(0.86, 0.83, 0.76), 0.55).multiplyScalar(1.06);
+  const stoneShade = stoneLight.clone().multiplyScalar(0.55);
+  const baseH = height > 75 ? 10.5 : height > 35 ? 7.4 : 5.2;
+  const dressed = !glass && !pyramid && height > 14 && bottom < gmax + 1;
+  const cs = height > 60 ? 1.9 : height > 30 ? 1.5 : 1.1;
+
+  tiers.forEach((t, k) => {
+    b.setBase(gmax, t.y1);
+    const split = dressed && k === 0 && t.y1 - gmax > 25;
+    b.setAux(glass ? char : split ? baseH : attic(k));
+    if (split) {
+      wallsAround(b, t.ring, sgn, t.y0, gmax + baseH, baseCol, surf);
+      wallsAround(b, t.ring, sgn, gmax + baseH, t.y1, wall, surf);
+    } else wallsAround(b, t.ring, sgn, t.y0, t.y1, wall, surf);
+    b.setAux(0);
+    if (!glass && !pyramid && t.y1 - gmax > 12) {
+      if (split && t.ring.length < 18) ledge(b, t.ring, sgn, gmax + baseH - 0.3, 0.6, 0.42, stoneLight, stoneShade, 5, true);
+      if (t.y1 - gmax > 35 && t.ring.length < 14) {
+        const pt = t.y1 - 0.3 - 1.25 * cs;
+        const y0 = k === 0 ? gmax + (split ? baseH : 0) : t.y0;
+        if (pt - y0 > 6) {
+          quoins(b, t.ring, sgn, y0, pt, 0.34, 1.5, stoneLight, TRIM, 7);
+          // shallow bays on the longest fronts: a wall that is not one plane
+          if (t.y1 - gmax > 32 && k === 0) {
+            const order = t.ring.map((_, i) => i).sort((a, c) => t.ring[(c + 1) % t.ring.length].distanceTo(t.ring[c]) - t.ring[(a + 1) % t.ring.length].distanceTo(t.ring[a])).slice(0, 2);
+            for (const i of order) {
+              const len = t.ring[i].distanceTo(t.ring[(i + 1) % t.ring.length]);
+              if (len < 26 || rnd(seed + 55 + i) < 0.25) continue;
+              const w = Math.min(len * 0.34, 14);
+              b.setBase(gmax, t.y1);
+              b.setAux(-1);
+              projection(b, t.ring, sgn, i, (len - w) / 2, (len + w) / 2, 0.6, gmax + (split ? baseH : 0), pt, wall, surf);
+              b.setAux(0);
+            }
+          }
+        }
+      }
+      cornice(b, t.ring, sgn, t.y1, wall, cs);
+    }
+    // terrace of a setback: a deck between this tier's walls and the next tier's, parapet standing round it
+    if (k < tiers.length - 1) deckOver(b, t.ring, t.y1 - 0.9, roofCol);
+  });
+
+  const last = tiers[tiers.length - 1];
+  const roofCentre = new THREE.Vector3(cen.x, wallTop - 50, cen.y);
+  if (pyramid) {
+    // copper-green or slate caps of the pre-war towers (the Pierre, the Sherry-Netherland, the San Remo lanterns)
+    const cap = parseColour(bld.roofColour, rnd(seed + 4) > 0.5 ? COPPER : srgb(0.3, 0.31, 0.33));
+    const apex = new THREE.Vector3(cen.x, top, cen.y);
+    for (let i = 0; i < local.length; i++) {
+      const p = local[i], q = local[(i + 1) % local.length];
+      b.tri(new THREE.Vector3(p.x, wallTop, p.y), new THREE.Vector3(q.x, wallTop, q.y), apex, cap, TRIM, roofCentre);
+    }
+    return;
+  }
+  // the walls stand a parapet's height above the roof deck
+  const deck = wallTop - (height > 8 && ringArea(last.ring) > 60 ? 0.9 : 0.15);
+
+  // a few copper mansards on plain pre-war blocks: a green roof is what the eye finds at 300 m
+  let mansard = false;
+  if (!glass && !bld.part && !multi && height > 28 && height < 115 && area > 220 && rnd(seed + 65) < 0.16) {
+    const d1 = Math.min(2.6, span * 0.08), dy1 = 4.4;
+    const r1 = insetRing(local, sgn, d1);
+    const r2 = r1 ? insetRing(r1, sgn, Math.min(2.2, span * 0.06)) : null;
+    if (r1 && r2) {
+      const col = NYC_COPPER[Math.floor(rnd(seed + 66) * NYC_COPPER.length)];
+      b.setBase(gmax, wallTop);
+      const lowC = new THREE.Vector3(cen.x, wallTop - 50, cen.y);
+      for (let i = 0; i < local.length; i++) {
+        const j = (i + 1) % local.length;
+        const V = (p: THREE.Vector2, y: number) => new THREE.Vector3(p.x, y, p.y);
+        b.quad(V(local[i], wallTop), V(local[j], wallTop), V(r1[j], wallTop + dy1), V(r1[i], wallTop + dy1), col, VROOF, lowC);
+        b.quad(V(r1[i], wallTop + dy1), V(r1[j], wallTop + dy1), V(r2[j], wallTop + dy1 + 1.1), V(r2[i], wallTop + dy1 + 1.1), col, VROOF, lowC);
+      }
+      deckOver(b, r2, wallTop + dy1 + 1.1, roofCol);
+      dormersOn(b, local, sgn, wallTop, dy1, d1, col, seed);
+      mansard = true;
+      roofEquipment(b, r2, wallTop + dy1 + 1.1, seed, height, wall, false);
+    }
+  }
+  if (!mansard) {
+    deckOver(b, last.ring, deck, roofCol);
+    b.setBase(gmax, wallTop);
+    // crowns: what makes a tower a particular tower
+    if (glass && height > 60) crown(b, last.ring, sgn, deck, wallTop, height, char, seed, wall, bld.part !== undefined);
+    else if (!bld.part && multi && !glass) {
+      // an older stone setback tower ends in a lantern and a pyramid, copper or slate
+      const lantern = NYC_COPPER[Math.floor(rnd(seed + 67) * NYC_COPPER.length)];
+      const inner = insetRing(last.ring, sgn, Math.min(2.2, Math.sqrt(ringArea(last.ring)) * 0.14));
+      if (inner && ringArea(inner) > 20) {
+        wallsAround(b, inner, sgn, wallTop - 0.9, wallTop + 3.4, stoneLight, TRIM);
+        pyramidOver(b, inner, wallTop + 3.4, Math.min(height * 0.07, 16), lantern);
+      } else roofEquipment(b, last.ring, deck, seed, height, wall, true);
+    } else if (!bld.part && !glass) {
+      roofEquipment(b, last.ring, deck, seed, height, wall, true);
+      twinTowers(b, local, sgn, deck, gmax, height, area, seed, wall, bld.kind);
+    } else if (!glass) roofEquipment(b, last.ring, deck, seed, height, wall, false);
+  }
+}
+
+/** A mansard's dormers: small windows under gables in the steep copper slope. */
+function dormersOn(b: Builder, ring: THREE.Vector2[], sgn: number, y0: number, dy: number, d: number, col: THREE.Color, seed: number) {
+  const n = ring.length;
+  const nor = outNormals(ring, sgn);
+  let count = 0;
+  const glassC = srgb(0.05, 0.06, 0.08), frame = srgb(0.84, 0.82, 0.76);
+  for (let i = 0; i < n && count < 18; i++) {
+    const p = ring[i], q = ring[(i + 1) % n];
+    const e = new THREE.Vector2().subVectors(q, p);
+    const len = e.length();
+    if (len < 8) continue;
+    e.divideScalar(len);
+    const ni = nor[i].clone().multiplyScalar(-1);
+    const m = Math.max(1, Math.floor((len - 5) / 5.2));
+    for (let k = 0; k < m && count < 18; k++) {
+      const t = 2.5 + ((len - 5) / m) * (k + 0.5);
+      const hw = 0.7, sf = d * 0.34, yb = y0 + dy * 0.34, yt = yb + 1.4, ya = yt + 0.55;
+      const C = p.clone().addScaledVector(e, t);
+      const P = (s: number, a: number, y: number) => new THREE.Vector3(C.x + ni.x * s + e.x * a, y, C.y + ni.y * s + e.y * a);
+      const behind = P(sf + 3, 0, yb + 0.6);
+      b.quad(P(sf, -hw, yb), P(sf, hw, yb), P(sf, hw, yt), P(sf, -hw, yt), frame, TRIM, behind);
+      b.quad(P(sf - 0.04, -hw * 0.6, yb + 0.2), P(sf - 0.04, hw * 0.6, yb + 0.2), P(sf - 0.04, hw * 0.6, yt - 0.2), P(sf - 0.04, -hw * 0.6, yt - 0.2), glassC, TRIM, behind);
+      b.tri(P(sf, -hw, yt), P(sf, hw, yt), P(sf, 0, ya), frame, TRIM, behind);
+      const below = P(sf + 1, 0, yb - 2);
+      b.quad(P(sf, -hw, yt), P(sf, 0, ya), P(d * 0.8, 0, ya), P(d * 0.7, -hw, yt), col, TRIM, below);
+      b.quad(P(sf, hw, yt), P(sf, 0, ya), P(d * 0.8, 0, ya), P(d * 0.7, hw, yt), col, TRIM, below);
+      count++;
+    }
+  }
+  void seed;
+}
+
+/** Tower crowns: each character ends differently so a skyline is not a row of identical prisms. */
+function crown(
+  b: Builder, ring: THREE.Vector2[], sgn: number, deck: number, wallTop: number, height: number, char: number, seed: number, wall: THREE.Color, part: boolean,
+) {
+  const area = ringArea(ring);
+  const c = ringCentroid(ring);
+  const { dir } = orientedBox(ring);
+  const dark = wall.clone().multiplyScalar(0.55);
+  const span = Math.sqrt(area);
+  if (char === T_BOX || char === T_CURTAIN) {
+    // a big mechanical penthouse and a few small boxes: the 1960s and 70s slab roof
+    b.box(c.x, c.y, dir, span * 0.22, span * 0.17, deck, deck + 4.5 + rnd(seed + 71) * 2, dark, TRIM);
+    if (area > 300) b.box(c.x + span * 0.2, c.y - span * 0.12, dir, 2.2, 1.8, deck, deck + 2.4, STEEL_LEGS, TRIM);
+  } else if (char === T_CONCRETE) {
+    // 432 Park: a plain flat top with a low service floor
+    b.box(c.x, c.y, dir, span * 0.2, span * 0.2, deck, deck + 2.2, dark, TRIM);
+  } else if (char === T_DARK) {
+    b.box(c.x, c.y, dir, span * 0.16, span * 0.16, deck, deck + 5, dark, TRIM);
+  } else if (char === T_SILVER) {
+    // stepped top: the last tier carries a lit cap and an antenna mast
+    b.box(c.x, c.y, dir, span * 0.14, span * 0.14, deck, deck + 3.5, dark, TRIM);
+  }
+  if (height > 190 && (!part || rnd(seed + 72) < 0.5)) {
+    // an antenna mast: a thin spike that shows against the sky from kilometres away
+    const m = Math.min(22, height * 0.07);
+    const w = 0.5;
+    const apex = new THREE.Vector3(c.x, deck + m, c.y);
+    const base = [[-w, -w], [w, -w], [w, w], [-w, w]].map(([x, z]) => new THREE.Vector3(c.x + x, deck, c.y + z));
+    for (let i = 0; i < 4; i++) b.tri(base[i], base[(i + 1) % 4], apex, STEEL_LEGS, TRIM, new THREE.Vector3(c.x, deck - 50, c.y));
+  }
+  void wallTop; void sgn;
+}
+
+/**
+ * The twin towers of the big pre-war houses on Central Park West and Fifth Avenue (San Remo, Eldorado, Majestic,
+ * Century): two stepped towers with copper or slate caps rising from the roof, near the ends of the long axis.
+ */
+function twinTowers(
+  b: Builder, ring: THREE.Vector2[], sgn: number, deck: number, gmax: number, height: number, area: number, seed: number, wall: THREE.Color, kind: string,
+) {
+  if (height < 62 || height > 160 || area < 650) return;
+  if (!['apartments', 'yes', 'residential', 'hotel', 'house'].includes(kind) || rnd(seed + 70) > 0.6) return;
+  const { dir, perp, u0, u1, v0, v1 } = orientedBox(ring);
+  const L = u1 - u0, W = v1 - v0;
+  if (W < 14 || L < 30) return;
+  const side = Math.min(13, Math.max(7, W * 0.38));
+  const extra = Math.min(26, Math.max(13, height * 0.2));
+  const vm = (v0 + v1) / 2;
+  const cap = NYC_COPPER[Math.floor(rnd(seed + 73) * 3)];
+  const stone = wall.clone().lerp(srgb(0.86, 0.83, 0.76), 0.35);
+  for (const u of [u0 + side / 2 + L * 0.14, u1 - side / 2 - L * 0.14]) {
+    const P = (uu: number, vv: number) => new THREE.Vector2(dir.x * uu + perp.x * vv, dir.y * uu + perp.y * vv);
+    let ok = true;
+    for (const [a, c] of [[1, 1], [1, -1], [-1, 1], [-1, -1]]) {
+      const q = P(u + a * side / 2, vm + c * side / 2);
+      if (!pointInRing(ring, q.x, q.y)) ok = false;
+    }
+    if (!ok) continue;
+    const rect = (hs: number) => [P(u - hs, vm - hs), P(u + hs, vm - hs), P(u + hs, vm + hs), P(u - hs, vm + hs)];
+    const r0 = rect(side / 2), r1 = rect(side * 0.36);
+    const yA = deck - 0.9, yB = deck + extra * 0.62, yC = yB + extra * 0.2;
+    b.setBase(deck, yB);
+    b.setAux(-1);
+    wallsAround(b, r0, 1, yA, yB, wall, MASONRY);
+    b.setBase(deck, yC);
+    wallsAround(b, r1, 1, yB - 0.9, yC, wall, MASONRY);
+    b.setAux(0);
+    cornice(b, r0, 1, yB, wall, 1.2);
+    deckOver(b, r0, yB - 0.9, NYC_ROOFS[0]);
+    cornice(b, r1, 1, yC, wall, 1.0);
+    b.setBase(deck, yC + extra * 0.4);
+    pyramidOver(b, r1, yC, extra * 0.34, cap);
+    // a lantern of stone under the finial
+    wallsAround(b, rect(0.45), 1, yC + extra * 0.34 - 0.2, yC + extra * 0.34 + 1.2, stone, TRIM);
+    void gmax; void sgn;
+  }
+}
+
 /**
  * The projecting stone cornice of a pre-war apartment house: a ledge about half a metre out and a metre tall just
  * under the parapet, with a thin fillet below it. The outline is offset with mitred corners; every face gets its
  * own inside point so the lighting normals come out right (the soffit must face down, the top up).
  */
-export function cornice(b: Builder, ring: THREE.Vector2[], sgn: number, wallTop: number, wall: THREE.Color) {
+export function cornice(b: Builder, ring: THREE.Vector2[], sgn: number, wallTop: number, wall: THREE.Color, scale = 1) {
   const n = ring.length;
   const out = (i: number) => {
     const e = new THREE.Vector2().subVectors(ring[(i + 1) % n], ring[i]).normalize();
     return new THREE.Vector2(e.y * sgn, -e.x * sgn);
   };
   const stone = wall.clone().lerp(srgb(0.8, 0.77, 0.7), 0.55).multiplyScalar(1.08);
-  const shade = stone.clone().multiplyScalar(0.8);
+  const shade = stone.clone().multiplyScalar(scale > 1 ? 0.62 : 0.8);
   const offs = (d: number) => ring.map((p, i) => {
     const n0 = out((i - 1 + n) % n), n1 = out(i);
     const m = new THREE.Vector2().addVectors(n0, n1).multiplyScalar(d / Math.max(1 + n0.dot(n1), 0.35));
     return p.clone().add(m);
   });
-  const big = offs(0.55), small = offs(0.25);
-  const yTop = wallTop - 0.3, yMid = wallTop - 1.2, yLow = wallTop - 1.55;
+  const big = offs(0.55 * scale), small = offs(0.25 * scale);
+  const yTop = wallTop - 0.3, yMid = yTop - 0.9 * scale, yLow = yMid - 0.35 * scale;
   const V = (p: THREE.Vector2, y: number) => new THREE.Vector3(p.x, y, p.y);
   for (let i = 0; i < n; i++) {
     const j = (i + 1) % n;
+    // chamfered and curved corners are runs of tiny edges: a ledge round each one cost more than the walls
+    if (ring[i].distanceTo(ring[j]) < 1.6) continue;
     const o = out(i);
     const mid = (a: THREE.Vector2[], y: number) => new THREE.Vector3((a[i].x + a[j].x) / 2, y, (a[i].y + a[j].y) / 2);
     const inside = (a: THREE.Vector2[], y: number) => mid(a, y).addScaledVector(new THREE.Vector3(o.x, 0, o.y), -50);
@@ -563,7 +1013,8 @@ export function cornice(b: Builder, ring: THREE.Vector2[], sgn: number, wallTop:
     b.quad(V(ring[i], yTop), V(ring[j], yTop), V(big[j], yTop), V(big[i], yTop), stone, TRIM, mid(big, yTop - 50));
     b.quad(V(big[i], yMid), V(big[j], yMid), V(big[j], yTop), V(big[i], yTop), stone, TRIM, inside(big, (yMid + yTop) / 2));
     b.quad(V(ring[i], yMid), V(ring[j], yMid), V(big[j], yMid), V(big[i], yMid), shade, TRIM, mid(big, yMid + 50));
-    // fillet under it
+    if (scale < 1.3) continue;
+    // fillet under it (tall houses only: on a row house it is a few pixels)
     b.quad(V(small[i], yLow), V(small[j], yLow), V(small[j], yMid), V(small[i], yMid), shade, TRIM, inside(small, (yLow + yMid) / 2));
     b.quad(V(ring[i], yLow), V(ring[j], yLow), V(small[j], yLow), V(small[i], yLow), shade, TRIM, mid(small, yLow + 50));
   }
@@ -1066,14 +1517,14 @@ function facadeMaterial(style: Style) {
     shader.vertexShader = shader.vertexShader
       .replace(
         '#include <common>',
-        '#include <common>\nattribute float surf;\nattribute float baseY;\nattribute float topY;\nvarying float vSurf;\nvarying float vBaseY;\nvarying float vTopY;\nvarying vec3 vFNormal;',
+        '#include <common>\nattribute float surf;\nattribute float baseY;\nattribute float topY;\nattribute float aux;\nvarying float vSurf;\nvarying float vBaseY;\nvarying float vTopY;\nvarying float vAux;\nvarying vec3 vFNormal;',
       )
       .replace(
         '#include <beginnormal_vertex>',
-        '#include <beginnormal_vertex>\nvFNormal = normalize(mat3(modelMatrix) * objectNormal);\nvSurf = surf;\nvBaseY = baseY;\nvTopY = topY;',
+        '#include <beginnormal_vertex>\nvFNormal = normalize(mat3(modelMatrix) * objectNormal);\nvSurf = surf;\nvBaseY = baseY;\nvTopY = topY;\nvAux = aux;',
       );
     shader.fragmentShader = shader.fragmentShader
-      .replace('#include <common>', '#include <common>\nuniform vec3 uShutA;\nuniform vec3 uShutB;\nvarying float vSurf;\nvarying float vBaseY;\nvarying float vTopY;\nvarying vec3 vFNormal;\nfloat fHash(vec2 p) { return fract(sin(dot(p, vec2(12.9898, 78.233))) * 43758.5453); }\nvec3 awnCol(float h) { return h < 0.2 ? vec3(0.1, 0.22, 0.15) : h < 0.4 ? vec3(0.36, 0.1, 0.11) : h < 0.6 ? vec3(0.09, 0.14, 0.27) : h < 0.8 ? vec3(0.5, 0.37, 0.14) : vec3(0.14, 0.14, 0.15); }')
+      .replace('#include <common>', '#include <common>\nuniform vec3 uShutA;\nuniform vec3 uShutB;\nvarying float vSurf;\nvarying float vBaseY;\nvarying float vTopY;\nvarying float vAux;\nvarying vec3 vFNormal;\nfloat fHash(vec2 p) { return fract(sin(dot(p, vec2(12.9898, 78.233))) * 43758.5453); }\nvec3 awnCol(float h) { return h < 0.2 ? vec3(0.1, 0.22, 0.15) : h < 0.4 ? vec3(0.36, 0.1, 0.11) : h < 0.6 ? vec3(0.09, 0.14, 0.27) : h < 0.8 ? vec3(0.5, 0.37, 0.14) : vec3(0.14, 0.14, 0.15); }')
       .replace(
         '#include <color_fragment>',
         `#include <color_fragment>
@@ -1193,10 +1644,15 @@ function facadeMaterial(style: Style) {
       float h8 = fHash(vec2(bid, 8.0)), h9 = fHash(vec2(bid, 9.0)), h10 = fHash(vec2(bid, 10.0));
       float fh = 3.0 + 0.45 * bid;
       float bay = 2.6 + 2.0 * h2;
-      float gfh = fh * (1.15 + 0.35 * h3);
+      // aux > 0: the geometry's stone base is this tall (Buildings.ts addManhattanBlock); aux < 0: an upper tier, no street floor
+      float geoB = step(0.5, vAux);
+      float noBase = step(vAux, -0.5);
+      float gfh = max(fh * (1.15 + 0.35 * h3) * (1.0 - noBase), 0.001);
       float tall = step(18.0, total);
       float mid = step(12.0, total);
-      float baseTop = gfh + tall * (1.0 + step(0.6, h4)) * fh;
+      float baseTop = mix(gfh + tall * (1.0 + step(0.6, h4)) * fh, vAux, geoB) * (1.0 - noBase);
+      // the cornice, fillet and frieze of a tall house take the top two to three metres
+      float cz = 1.7 + 0.6 * step(30.0, total) + 0.5 * step(60.0, total);
       // windows smaller than a pixel flicker: fade the pattern to its mean with distance
       float fine = wallF * (1.0 - smoothstep(0.22, 0.6, max(fwidth(uc) / bay, fwidth(hy) / fh)));
       float near = 1.0 - smoothstep(25.0, 90.0, camD);
@@ -1222,14 +1678,15 @@ function facadeMaterial(style: Style) {
       // rusticated base: a groove between courses, drawn while a course is still several pixels tall
       float groove = (1.0 - smoothstep(0.0, 0.09, fract(hy / 0.55))) * (1.0 - smoothstep(0.12, 0.4, fwidth(hy) / 0.55));
       float ashlar = 0.94 + 0.06 * fHash(vec2(floor(uc / 0.9), floor(hy / 0.55)));
-      base = mix(base, stone * (1.0 - 0.3 * groove) * ashlar * mix(1.0, 0.9, lime), podium);
+      vec3 podCol = mix(stone * (1.0 - 0.3 * groove) * ashlar * mix(1.0, 0.9, lime), base * (1.0 - 0.22 * groove) * ashlar, geoB);
+      base = mix(base, podCol, podium);
       // belt courses: over the base, and on tall houses every few storeys
       float hy2 = hy - gfh;
       float beltN = 4.0 + floor(h6 * 3.0);
       float beltPos = abs(hy2 - fh * beltN * floor(hy2 / (fh * beltN) + 0.5));
       float belt = max(step(beltPos, 0.2) * step(40.0, total) * step(baseTop + fh, hy), tall * step(abs(hy - baseTop), 0.2));
-      float cornice = smoothstep(1.5, 1.3, total - hy) * mid;
-      float shadowLine = smoothstep(2.3, 1.5, total - hy) * step(1.5, total - hy) * mid;
+      float cornice = smoothstep(cz - 0.2, cz - 0.4, total - hy) * mid;
+      float shadowLine = smoothstep(cz + 0.8, cz, total - hy) * step(cz, total - hy) * mid;
       base = mix(base, mix(stone, vec3(0.72, 0.69, 0.62), 0.6), max(belt, cornice));
       base *= 1.0 - 0.28 * shadowLine;
       // piers: a vertical stone strip every few bays on the upper floors of some houses
@@ -1243,7 +1700,7 @@ function facadeMaterial(style: Style) {
       float ww = 0.15 + 0.13 * h9;
       float wy0 = 0.2 + 0.06 * h10, wy1 = 0.76 + 0.08 * h2;
       float inWx = step(0.5 - ww, fx) * step(fx, 0.5 + ww);
-      float up = step(0.0, hy2) * step(1.7, total - hy);
+      float up = step(0.0, hy2) * step(cz, total - hy);
       float win = inWx * step(wy0, fy) * step(fy, wy1) * up;
       float cell = fHash(floor(vec2(uc / bay, hy2 / fh)) + bid * 31.0);
       // sill and lintel in stone; a drip stain under the sill that fades down the wall
@@ -1308,14 +1765,23 @@ function facadeMaterial(style: Style) {
       diffuseColor.rgb = mix(diffuseColor.rgb, col, wallF);
     } else {
       // curtain wall: glass floor to floor between slim mullions, an opaque spandrel band at every slab,
-      // a dark mechanical crown. The glass reflects the sky: low floors the haze of the street, high ones the zenith
-      float fh = 3.8 + 0.5 * bid;
-      float bay = 1.5 + 0.5 * fHash(vec2(bid, 9.0));
+      // a dark mechanical crown. The glass reflects the sky: low floors the haze of the street, high ones the zenith.
+      // aux names the tower's character: 1 pale concrete grid of deep square windows (432 Park Avenue), 2 dark glass,
+      // 3 silvery glass, 4 a 1960s dark box with ribbon windows, 0 plain curtain wall
+      float vC = step(0.5, vAux) * step(vAux, 1.5);
+      float vD = step(1.5, vAux) * step(vAux, 2.5);
+      float vS = step(2.5, vAux) * step(vAux, 3.5);
+      float vB = step(3.5, vAux);
+      float fh = mix(3.8 + 0.5 * bid, 3.35, vC);
+      fh = mix(fh, 4.1, vD); fh = mix(fh, 4.3, vS); fh = mix(fh, 3.7, vB);
+      float bay = mix(1.5 + 0.5 * fHash(vec2(bid, 9.0)), 3.35, vC);
+      bay = mix(bay, 1.55, vD); bay = mix(bay, 1.7, vS); bay = mix(bay, 2.6, vB);
       float fine = 1.0 - smoothstep(0.25, 0.7, max(fwidth(uc) / bay, fwidth(hy) / fh));
       float fy = fract(hy / fh);
       float fx = fract(uc / bay);
-      float spandrel = step(fy, 0.2) * fine;
-      float mullion = step(abs(fx - 0.5), 0.035) * fine;
+      float spW = mix(0.2, 0.12, vD); spW = mix(spW, 0.16, vS); spW = mix(spW, 0.42, vB);
+      float spandrel = step(fy, spW) * fine * (1.0 - vC);
+      float mullion = step(abs(fx - 0.5), mix(0.035, 0.018, vD + vS)) * fine * (1.0 - vC) * (1.0 - vB * 0.6);
       vec2 ci = floor(vec2(uc / bay, hy / fh));
       float cell = fHash(ci + bid * 17.0);
       // groups of panels and whole floors vary in tint, like blinds half drawn and different glass lots
@@ -1340,11 +1806,36 @@ function facadeMaterial(style: Style) {
       glassCol *= (0.93 + 0.14 * cell * fine) * (0.94 + 0.12 * lot * fine) * (0.97 + 0.06 * floorV * bandFine);
       glassCol = mix(glassCol, tint * 0.55, spandrel * 0.7);
       glassCol = mix(glassCol, tint * 0.3 + 0.02, mullion * 0.8);
+      // 432 Park Avenue: a pale concrete grid with a deep square window in every cell. The wall is the concrete, the
+      // window a recess: shadow under the head and on one side, sky in the glass
+      float wx = abs(fx - 0.5), wy = abs(fy - 0.5);
+      float inWin = step(wx, 0.31) * step(wy, 0.31);
+      float rvx = (fx - 0.19) / 0.62, rvy = (0.81 - fy) / 0.62;
+      float recess = 1.0 - 0.5 * smoothstep(0.2, 0.0, rvy) - 0.3 * smoothstep(0.14, 0.0, rvx);
+      vec3 concrete = tint * (0.96 + 0.06 * fHash(ci + bid)) ;
+      vec3 winC = mix(vec3(0.03, 0.035, 0.04), refl * 0.55, 0.15 + 0.5 * fres) * recess;
+      float cFine = fine * inWin;
+      vec3 concreteCol = mix(concrete, winC, cFine);
+      concreteCol = mix(concreteCol, concrete * 0.78, (1.0 - fine) * 0.5 + 0.0);
+      // vertical fins and horizontal mechanical bands: the large scale that survives at a kilometre, where a
+      // window is under a pixel. Neighbours get different periods so they do not read as one pattern
+      float Pf = 6.0 + 5.0 * fHash(vec2(bid, 21.0));
+      float finW = 0.22 * Pf;
+      float finFade = 1.0 - smoothstep(0.2, 0.6, fwidth(uc) / finW);
+      float fin = step(fract(uc / Pf), 0.22) * finFade;
+      float finAmp = (vS * 0.2 + vD * 0.16 + vB * 0.0 + (1.0 - vS - vD - vB - vC) * 0.1);
+      glassCol *= 1.0 + finAmp * (fin - 0.22 * finFade);
+      float pm = fh * (9.0 + floor(fHash(vec2(bid, 23.0)) * 4.0));
+      float mechF = 1.0 - smoothstep(0.2, 0.6, fwidth(hy) / (2.0 * fh));
+      float mech = step(fract((hy - 0.5 * pm) / pm), 2.0 * fh / pm) * step(pm, hy) * step(70.0, total) * mechF * (1.0 - vC);
+      glassCol = mix(glassCol, tint * 0.5 * (0.8 + 0.2 * step(0.5, fract(hy / 0.7)) * fine) + 0.02, mech * 0.6);
       // mechanical crown: opaque louvred band under the roof, and a darker lobby floor at the foot
       float tallT = step(40.0, total);
       float crown = step(total - hy, clamp(total * 0.035, 3.0, 9.0)) * tallT;
       float louvre = 0.8 + 0.2 * step(0.5, fract(hy / 0.7)) * fine;
       glassCol = mix(glassCol, tint * 0.32 * louvre + 0.015, crown);
+      concreteCol = mix(concreteCol, tint * 0.55 * louvre, crown);
+      glassCol = mix(glassCol, concreteCol, vC);
       glassCol *= 1.0 - 0.35 * step(hy, 6.0) * tallT;
       diffuseColor.rgb = mix(diffuseColor.rgb, glassCol, wallF);
     }
@@ -1368,19 +1859,27 @@ ${SYDNEY_GLSL}
     float near = 1.0 - smoothstep(25.0, 90.0, camD);
     float bay = mix(2.55, 3.3, h2) * (1.0 + 0.55 * mono);
     float gfh = mix(3.9, 4.8, h3) * (1.0 + 0.12 * mono);
-    float mzh = mix(2.8, 3.4, h4);
-    float pnh = mix(4.4, 5.2, h5) * (1.0 + 0.1 * mono);
+    // aux > 0: the block's geometry fixes the storeys (ViennaBlock.ts: stone base, moulding, balcony band follow them);
+    // aux < 0: a turret or other upper block with no street floor
+    float geo = step(0.5, vAux);
+    float upOnly = step(vAux, -0.5);
+    float mzh = mix(mix(2.8, 3.4, h4), 3.2, geo);
+    float pnh = mix(mix(4.4, 5.2, h5), 4.8, geo) * (1.0 + 0.1 * mono);
     float yG = min(gfh, total * 0.45);
-    float yM = yG + mzh * step(17.0, total);
-    float yP = yM + pnh * step(10.5, total);
-    float rem = max(total - 1.7 - yP, 0.0);
+    yG = mix(yG, vAux - mzh * step(17.0, total), geo);
+    yG *= 1.0 - upOnly;
+    float yM = (yG + mzh * step(17.0, total)) * (1.0 - upOnly);
+    float yP = (yM + pnh * step(10.5, total)) * (1.0 - upOnly);
+    // the heavy cornice and its fillet take the top two to three metres of a tall block
+    float cz = mix(mix(2.0, 2.9, step(17.0, total)), 1.7, upOnly);
+    float rem = max(total - cz - yP, 0.0);
     float nUp = max(floor(rem / 3.7 + 0.5), 0.0);
     float fhu = rem / max(nUp, 1.0);
     float zone = 0.0, y0 = 0.0, fh = max(yG, 0.5);
     if (hy >= yG && hy < yM) { zone = 1.0; y0 = yG; fh = mzh; }
     else if (hy >= yM && hy < yP) { zone = 2.0; y0 = yM; fh = pnh; }
-    else if (hy >= yP && hy < total - 1.7) { zone = 3.0; y0 = yP; fh = fhu; }
-    else if (hy >= total - 1.7) { zone = 4.0; y0 = total - 1.7; fh = 1.7; }
+    else if (hy >= yP && hy < total - cz) { zone = 3.0; y0 = yP; fh = fhu; }
+    else if (hy >= total - cz) { zone = 4.0; y0 = total - cz; fh = cz; }
     float rawY = (hy - y0) / fh;
     float fIdx = zone > 2.5 ? floor(rawY) : 0.0;
     float fy = zone > 2.5 ? rawY - fIdx : clamp(rawY, 0.0, 1.0);
@@ -1460,6 +1959,23 @@ ${SYDNEY_GLSL}
       col = mix(col, base * 0.84, pedIn * fine * near);
       col = mix(col, pn * reveal, win * fine);
       col = mix(col, vec3(0.9, 0.88, 0.82), sash * fine * near);
+      if (mono > 0.5 && zone < 2.5) {
+        // colossal order over the mezzanine and the piano nobile: half-round columns on the bay joints (shaded across,
+        // lit on one side) with a shadow strip beside them, and on every other monument an arched loggia in the recess
+        float dj = min(fx, 1.0 - fx);
+        float cc = clamp(dj / 0.1, 0.0, 1.0);
+        float sideX = (fx < 0.5 ? -1.0 : 1.0) * cc;
+        float cyl = (0.55 + 0.45 * sqrt(max(1.0 - cc * cc, 0.0))) * (1.0 - 0.16 * sideX);
+        float isCol = step(dj, 0.1) * fine;
+        float loggia = step(0.5, h6) * step(1.5, zone);
+        float ax = (fx - 0.5) / 0.33;
+        float spring = 0.6;
+        float ayy = (fy - spring) / 0.3;
+        float inLog = step(abs(ax), 1.0) * step(0.05, fy) * (step(fy, spring) + step(spring, fy) * step(length(vec2(ax, ayy)), 1.0));
+        col = mix(col, base * 0.3 + sky * 0.02, inLog * loggia * fine);
+        col = mix(col, col * 0.78, step(0.1, dj) * step(dj, 0.17) * fine);
+        col = mix(col, stone * 1.04 * cyl, isCol);
+      }
     }
     // the mean of wall and windows where the pattern is too fine to draw
     col = mix(col, base * mix(0.84, 0.76, step(zone, 0.5)) + sky * 0.03, (1.0 - fine) * wallF * 0.9);
@@ -1475,18 +1991,7 @@ ${SYDNEY_GLSL}
     float stag = fract(run / 0.26 + floor(up / 0.3) * 0.5);
     float tl = 0.8 + 0.2 * smoothstep(0.0, 0.14, course) * smoothstep(0.0, 0.1, stag) * smoothstep(1.0, 0.9, stag);
     diffuseColor.rgb *= mix(1.0, tl * (0.9 + 0.2 * fHash(vec2(floor(run / 0.26), floor(up / 0.3)))), fineR * detail);
-    float steep = 1.0 - smoothstep(0.5, 0.78, n.y);
-    float dT = 3.0 + 1.0 * fHash(vec2(vBaseY, vTopY));
-    float da = fract(run / dT);
-    float inD = step(abs(da - 0.5), 0.14) * step(0.85, up) * step(up, 2.0);
-    float dFrame = step(abs(da - 0.5), 0.18) * step(0.78, up) * step(up, 2.08) - inD;
-    float dCap = step(abs(da - 0.5), 0.19 * (1.0 - (up - 2.08) / 0.55)) * step(2.08, up) * step(up, 2.63);
-    float dk = steep * fineR * detail;
-    vec3 dv = normalize(wp - cameraPosition);
-    vec3 dr = reflect(dv, n);
-    vec3 dglass = mix(vec3(0.04, 0.045, 0.055), atmoSky(normalize(vec3(dr.x, abs(dr.y) * 0.6 + 0.05, dr.z))) * 0.8, 0.2);
-    diffuseColor.rgb = mix(diffuseColor.rgb, vec3(0.62, 0.6, 0.56), clamp(dFrame + dCap, 0.0, 1.0) * dk);
-    diffuseColor.rgb = mix(diffuseColor.rgb, dglass, inD * dk);
+    // dormers are real geometry now (ViennaBlock.ts, dormers())
   } else if (sid == 4) {
     // geraniums: red blossoms over green leaves
     float b = fHash(floor(vec2(u * 9.0, wp.y * 9.0)));
@@ -1565,6 +2070,7 @@ export class Buildings extends WorldGroup {
       geo.setAttribute('surf', new THREE.Float32BufferAttribute(builder.surf, 1));
       geo.setAttribute('baseY', new THREE.Float32BufferAttribute(builder.base, 1));
       geo.setAttribute('topY', new THREE.Float32BufferAttribute(builder.top, 1));
+      geo.setAttribute('aux', new THREE.Float32BufferAttribute(builder.aux, 1));
       geo.computeVertexNormals();
       const mesh = new THREE.Mesh(geo, mat);
       mesh.position.set(ox, 0, oz);

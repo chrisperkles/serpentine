@@ -65,7 +65,7 @@ needed before any score counts as final. No photos, Street View or Maps were use
 ## Open issues
 
 - No second wing for the courtyard blocks: the outline's courtyard is filled in (flat or hipped roof over it).
-- Dormers are drawn in the roof shader, not as geometry; they vanish in silhouette.
+- Dormers are geometry now (3rd pass); they are still one design and spaced evenly. Corner turrets, risalits and balustrade statues are generic, not the real buildings'.
 - Windows have no reveals deeper than a shaded edge; no balconies, no shutters (right), no shop signs or awnings.
 - Overlapping 3D parts of one monument show coplanar walls in two tints in places.
 - Trams are boxes: no bogies, no doors, no destination text, no stops where they stand.
