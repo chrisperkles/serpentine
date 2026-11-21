@@ -55,6 +55,8 @@ export interface Biome {
   parkLamps?: boolean;
   /** Open ground is mown lawn: turf with hardly any tufts. */
   lawn?: boolean;
+  /** Park trees: elm, plane and oak shapes with New York autumn colour (Central Park) instead of beech and spruce. */
+  parkTrees?: boolean;
 }
 
 export const ALPINE: Biome = {

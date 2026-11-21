@@ -62,3 +62,28 @@ export function evergreenBroadTint(rand: number, out: THREE.Color): THREE.Color 
 export function pineTint(rand: number, out: THREE.Color): THREE.Color {
   return out.setRGB(0.3, 0.37, 0.25).multiplyScalar(0.85 + rand * 0.25);
 }
+
+const PARK_GREEN = new THREE.Color(0.3, 0.5, 0.2);
+const PARK_YG = new THREE.Color(0.95, 0.8, 0.2);
+// late-autumn targets per species: elm clear yellow to yellow-brown, plane duller tan-brown, oak russet to red-brown
+const PARK_END: Record<'elm' | 'plane' | 'oak', [THREE.Color, THREE.Color]> = {
+  elm: [new THREE.Color(1.5, 1.0, 0.22), new THREE.Color(1.15, 0.7, 0.16)],
+  plane: [new THREE.Color(1.35, 0.88, 0.25), new THREE.Color(0.98, 0.6, 0.18)],
+  oak: [new THREE.Color(1.15, 0.5, 0.14), new THREE.Color(0.9, 0.34, 0.12)],
+};
+const PARK_MAPLE = new THREE.Color(1.1, 0.3, 0.12);
+
+/** New York park trees: some hold green into late autumn, a few oaks are maples and turn scarlet. */
+export function parkTint(species: 'elm' | 'plane' | 'oak', day: number, elevation: number, rand: number, out: THREE.Color): THREE.Color {
+  if (day < 150) return out.copy(SPRING).multiplyScalar(0.9 + rand * 0.2);
+  let p = autumnProgress(day, elevation, rand);
+  // about one tree in six is late and still mostly green
+  if ((rand * 6.13) % 1 < 0.14) p *= 0.4;
+  const [mid, end] = PARK_END[species];
+  if (p <= 0) out.copy(PARK_GREEN);
+  else if (p < 0.35) out.copy(PARK_GREEN).lerp(PARK_YG, p / 0.35);
+  else if (p < 0.8) out.copy(PARK_YG).lerp(mid, (p - 0.35) / 0.45);
+  else out.copy(mid).lerp(end, Math.min(1, (p - 0.8) / 0.5));
+  if (species === 'oak' && (rand * 9.7) % 1 < 0.22 && p > 0.4) out.lerp(PARK_MAPLE, Math.min(1, (p - 0.4) * 1.5));
+  return out.multiplyScalar(0.86 + rand * 0.26);
+}
