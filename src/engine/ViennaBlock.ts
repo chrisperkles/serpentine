@@ -277,13 +277,18 @@ export function addViennaBlock(
     wall = VIENNA_WALLS[Math.floor(rnd(seed) * VIENNA_WALLS.length)].clone();
     wall.multiplyScalar(0.96 + rnd(seed + 5) * 0.08);
   }
-  const roofDefault = (monument && (capKind || rnd(seed + 6) > 0.5)) ? VERDIGRIS : VIENNA_ROOFS[Math.floor(rnd(seed + 7) * VIENNA_ROOFS.length)];
+  // verdigris only on domes and spires: as the default for a monument's main roof it laid a mint slab over the Parliament
+  const roofDefault = (monument && capKind) ? VERDIGRIS : VIENNA_ROOFS[Math.floor(rnd(seed + 7) * VIENNA_ROOFS.length)];
   const roofCol = parseColour(bld.roofColour, roofDefault).clone();
   if (bld.roofColour) {
     roofCol.getHSL(hsl, THREE.SRGBColorSpace);
     roofCol.setHSL(hsl.h, Math.min(hsl.s, 0.6), Math.min(Math.max(hsl.l, 0.1), 0.72), THREE.SRGBColorSpace);
     // OSM's copper green (#6EBE9F) is mint; weathered verdigris under noon sun is greyer and darker
-    if (hsl.h > 0.33 && hsl.h < 0.55) roofCol.lerp(new THREE.Color(0.2, 0.22, 0.21), 0.62).multiplyScalar(0.62);
+    if (hsl.h > 0.33 && hsl.h < 0.55) {
+      // The University's whole roof is tagged so. Mixing towards grey in sRGB left green at twice the red
+      // in linear light, and under the sun that was still a mint slab: set the weathered tone outright.
+      roofCol.setRGB(0.15, 0.19, 0.17).multiplyScalar(0.9 + 0.2 * rnd(seed + 8));
+    }
   }
 
   // --- walls: the shader counts storeys from baseY and finds the cornice from topY (the eaves)

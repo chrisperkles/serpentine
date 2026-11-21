@@ -351,3 +351,7 @@ symptom (what it looked like), cause, fix and where. Newest at the bottom of eac
   verge grass at the road, half the gravel relief.
 - **Shared code was left alone for the next style to build on.** New style code lives in `ViennaBlock.ts` and `Tram.ts`;
   `Buildings.ts` only gained exports, a `Style.vienna` flag and one shader branch, with surface ids 11-13 (Sydney: 14-16).
+- **A copper roof stayed mint after being "greyed".** Mixing the tagged colour (#6EBE9F) towards grey and capping
+  its HSL saturation at 0.14 changed nothing on screen: in linear light green was still twice the red, and under the
+  noon sun that reads as teal. Fix: tagged copper-green roofs get the weathered tone outright (linear 0.15, 0.19, 0.17).
+  Judge a colour fix by the re-captured frame, not by the number. Where: `ViennaBlock.ts`.
