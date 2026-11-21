@@ -51,6 +51,8 @@ export interface Cover {
 export interface Barrier {
   pts: Float32Array;
   kind: string;
+  /** Tagged height (m) when there is one; New York maps feet and inches (3'10"). */
+  height?: number;
 }
 
 /** Communication towers, masts and bell towers (OSM man_made tower/mast): landmarks seen from far. */
@@ -481,7 +483,7 @@ export function parseOsm(route: Route, elements: OsmElement[]): OsmWorld {
         woodTop: t['serpentine:wood_top'] === undefined ? undefined : t['serpentine:wood_top'] === 'yes',
       });
     } else if (t.barrier && el.type === 'way' && el.geometry && !t.area) {
-      barriers.push({ pts: toLine(route, el.geometry), kind: t.barrier });
+      barriers.push({ pts: toLine(route, el.geometry), kind: t.barrier, height: barrierHeight(t.height) });
     } else if (t.power === 'line' || t.power === 'minor_line') {
       if (el.geometry) barriers.push({ pts: toLine(route, el.geometry), kind: `power:${t.power}` });
     } else if (coverCls && (el.type === 'way' || el.type === 'relation') && t.natural !== 'cliff') {
@@ -497,6 +499,13 @@ export function parseOsm(route: Route, elements: OsmElement[]): OsmWorld {
     }
   }
   return { forests, water, buildings: dropOutlines(buildings), roads, trees: new Float32Array(trees), cover, barriers, pois, towers };
+}
+
+function barrierHeight(v?: string): number | undefined {
+  if (!v) return undefined;
+  const ft = /^(\d+)'\s*(?:(\d+)")?$/.exec(v.trim());
+  const h = ft ? parseInt(ft[1], 10) * 0.3048 + (ft[2] ? parseInt(ft[2], 10) * 0.0254 : 0) : parseFloat(v);
+  return Number.isFinite(h) && h > 0 ? h : undefined;
 }
 
 function toLine(route: Route, g: LatLon[]): Float32Array {
