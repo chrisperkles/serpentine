@@ -293,3 +293,10 @@ symptom (what it looked like), cause, fix and where. Newest at the bottom of eac
 - **`bake-trees.py --fill` planted 123,000 trees in Central Park.** Fill is for closed forest; in a park the canopy
   peaks alone (13,952 with `--window 0.8`) match the real count. Park trees also need the open-grown model for every
   tree, or tall trunks carry small crowns. Where: `bake-trees.py`, `Vegetation.ts` (`biome.lawn`).
+- **Central Park's rider turned on the spot and rode back, twice near the end.** Via points a few metres off the
+  drive made BRouter ride out to them and straight back: five dead-end spurs (0.2 to 19 m, at 1.16, 2.85, 8.4, 9.24
+  and 9.46 km), and the start itself was a 5 m spur. Fix: `despur` cuts a detour wherever the line returns to a point
+  it left less than 120 m of riding ago, and closes a loop where the start spur left the road; it runs in every bake
+  and on baked files with `--despur`. Wachau, Neusiedler See, Wolfgangsee, Sydney and Vienna Ring have spurs too
+  (listed by `node scripts/bake-routes.mjs --despur`, not yet applied: lengths and best times shift).
+  Where: `scripts/bake-routes.mjs`.

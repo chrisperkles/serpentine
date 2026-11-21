@@ -127,10 +127,10 @@
     "region": "New York, US",
     "category": "city",
     "loop": true,
-    "lengthKm": 9.89,
+    "lengthKm": 9.79,
     "gain": 55,
-    "startEle": 27.8,
-    "endEle": 27.8
+    "startEle": 28.3,
+    "endEle": 28.3
   },
   {
     "id": "sydney",

@@ -42,9 +42,54 @@ const hav = (a, b) => {
   return 2 * 6371008.8 * Math.asin(Math.sqrt(h));
 };
 
+/**
+ * A via point a few metres off the road makes the router ride out to it and straight back: a dead-end spur where
+ * the rider turns on the spot, twice. Wherever the line comes back to a point it left less than `reach` metres
+ * of riding ago, the detour is cut out. On a loop the start can be such a spur too (out from the first point,
+ * back to it at the end): then the loop closes where the spur left the road.
+ */
+function despur(coords, loop, reach = 120) {
+  const out = coords.map((c) => [...c]);
+  let cut = 0;
+  for (let i = 0; i < out.length - 2; i++) {
+    let run = 0, last = -1;
+    for (let j = i + 1; j < out.length && run < reach; j++) {
+      run += hav(out[j - 1], out[j]);
+      if (j > i + 1 && hav(out[i], out[j]) < 0.6) last = j;
+    }
+    if (last > 0) { cut += last - i; out.splice(i + 1, last - i); }
+  }
+  if (loop) {
+    while (out.length > 6 && hav(out[1], out.at(-2)) < 0.6) { out.shift(); out.pop(); cut += 2; }
+    out[out.length - 1] = [...out[0]];
+  }
+  return { coords: out, cut };
+}
+
 mkdirSync('public/routes', { recursive: true });
 const indexPath = 'public/routes/index.json';
 const index = existsSync(indexPath) ? JSON.parse(readFileSync(indexPath, 'utf8')) : [];
+// --despur: clean the spurs out of an already baked route without asking the router again
+if (args.includes('--despur')) {
+  for (const p of PRESETS) {
+    if (only && p.id !== only) continue;
+    const file = `public/routes/${p.id}.json`;
+    if (!existsSync(file)) continue;
+    const route = JSON.parse(readFileSync(file, 'utf8'));
+    const { coords, cut } = despur(route.coords, route.loop);
+    let len = 0;
+    for (let i = 1; i < coords.length; i++) len += hav(coords[i - 1], coords[i]);
+    console.log(`${p.id.padEnd(20)} ${cut} points in spurs, ${route.lengthKm} → ${(len / 1000).toFixed(2)} km`);
+    if (!cut || !only) continue;
+    route.coords = coords;
+    route.lengthKm = +(len / 1000).toFixed(2);
+    writeFileSync(file, JSON.stringify(route));
+    const e = index.find((x) => x.id === p.id);
+    if (e) Object.assign(e, { lengthKm: route.lengthKm, startEle: coords[0][2], endEle: coords.at(-1)[2] });
+    writeFileSync(indexPath, JSON.stringify(index, null, 2));
+  }
+  process.exit(0);
+}
 let failed = false;
 for (const p of PRESETS) {
   if (only ? p.id !== only : !all && existsSync(`public/routes/${p.id}.json`)) continue;
@@ -73,6 +118,7 @@ for (const p of PRESETS) {
     if (gap > 0) coords.push([...coords[0]]);
     else coords[coords.length - 1] = [...coords[0]];
   }
+  coords = despur(coords, p.loop).coords;
   let len = 0;
   for (let i = 1; i < coords.length; i++) len += hav(coords[i - 1], coords[i]);
   const lengthKm = +(len / 1000).toFixed(2);

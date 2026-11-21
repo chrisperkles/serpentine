@@ -62,7 +62,9 @@ needed before any score counts as final.
 | Date | Chris said | Reason | Status |
 |---|---|---|---|
 | 2026-11-21 | "It doesn't feel and look like Central Park, and also not like New York. The buildings are very blockish, not a lot of details. Cars are driving there." Road cracks don't matter; the surroundings, trees and buildings do. | Rode it and didn't recognise the place | First pass built (branch `central-park`): 3D buildings in a Manhattan style, baked trees, lawn, park lamps, no cars, people on the drive |
+| 2026-11-21 | "At the end there are two hiccups where it's not a closed loop: the cyclist turns around and goes the other way." | Breaks the ride | Fixed: five dead-end spurs and the spur at the start cut out of the route (9.89 → 9.79 km) |
 
 ## Status
 
-First pass 2026-11-21. Not reviewed against a board.
+First pass 2026-11-21. First review REJECT 3.00 (built 2, place 2), `research/central-park/review-2026-11-21.md`; no board yet.
+A small chicane is left at km 8.3 where the route swings through the 72nd Street junction.
