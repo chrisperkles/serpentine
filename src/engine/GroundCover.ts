@@ -9,6 +9,8 @@ import { patchMaterial } from './atmosphere.ts';
 import { broadleafGeometry, preserveCoverage, REGIONS, treeAtlas } from './treeModels.ts';
 import { loadModel } from './Landmarks.ts';
 import { ALPINE, type Biome } from './biome.ts';
+import { STREET_LEDGE } from './Road.ts';
+import { PAVING_GLSL } from './groundTextures.ts';
 
 const CHUNK = 40; // metres of route per chunk
 const AHEAD = 280;
@@ -24,6 +26,75 @@ function rng(seed: number) {
     t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
     return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
   };
+}
+
+/** Mapped footways that become a visible surface in the city biomes (parks, sidewalks), with their width (m). */
+const PATH_WIDTH: Record<string, number> = { footway: 2.0, path: 2.0, pedestrian: 4.0, cycleway: 2.6, bridleway: 2.4 };
+
+/**
+ * Footpaths as thin ribbons draped over the terrain: crisp edges at any width, which the 3 m land-cover mask cannot give.
+ * Central Park's are pale asphalt, Vienna's paved sidewalks or (inside parks) fine gravel, Sydney's concrete with joints.
+ */
+function pathMaterial(biome: Biome) {
+  const mat = new THREE.MeshLambertMaterial({ transparent: true, depthWrite: false });
+  const kind = biome.suburb ? 2 : biome.streets ? 1 : 0;
+  mat.onBeforeCompile = (shader) => {
+    shader.uniforms.uPathKind = { value: kind };
+    shader.vertexShader = shader.vertexShader
+      .replace('#include <common>', '#include <common>\nattribute vec3 pathUv;\nvarying vec3 vPath;')
+      .replace('#include <begin_vertex>', '#include <begin_vertex>\nvPath = pathUv;');
+    shader.fragmentShader = shader.fragmentShader
+      .replace(
+        '#include <common>',
+        `#include <common>
+uniform float uPathKind;
+varying vec3 vPath;
+${PAVING_GLSL}
+float pn(vec2 p) {
+  vec2 i = floor(p), f = fract(p); f = f * f * (3.0 - 2.0 * f);
+  return mix(mix(gHash(i), gHash(i + vec2(1, 0)), f.x), mix(gHash(i + vec2(0, 1)), gHash(i + vec2(1, 1)), f.x), f.y);
+}`,
+      )
+      .replace(
+        '#include <map_fragment>',
+        `{
+  // vPath: metres across (signed), metres along, half width; z < 0 marks a gravel path inside a Vienna park
+  float hw = abs(vPath.z);
+  float across = vPath.x;
+  vec2 pp = vec2(across, vPath.y);
+  float pix = gPix(pp);
+  float inner = hw - abs(across);
+  float edge = clamp(inner / max(pix, 1e-3) + 0.5, 0.0, 1.0);
+  vec3 col;
+  float n = 0.9 + 0.2 * pn(pp * vec2(1.7, 0.9)) + 0.08 * (pn(pp * 23.0) - 0.5);
+  if (uPathKind < 0.5) {
+    // Central Park: pale grey asphalt, a darker worn middle, a hairline of grit at the edge
+    col = vec3(0.27, 0.265, 0.255) * n;
+    col *= 1.0 - 0.1 * (1.0 - smoothstep(0.0, 0.5, abs(across)));
+  } else if (uPathKind < 1.5) {
+    if (vPath.z < 0.0) {
+      // fine park gravel: warm sand with pale pebbles
+      col = vec3(0.46, 0.39, 0.29) * n * (0.86 + 0.28 * pn(pp * 38.0));
+    } else {
+      vec2 sid = vec2(0.0);
+      float js = gJoint(pp, vec2(0.6, 0.9), 0.014, pix, sid);
+      float tone = mix(1.0, 0.9 + 0.2 * gHash(sid), 1.0 - smoothstep(0.1, 0.45, pix / 0.6));
+      col = vec3(0.3, 0.285, 0.26) * n * tone * (1.0 - 0.55 * js);
+    }
+  } else {
+    // Sydney: concrete, a saw-cut joint every 1.5 m
+    float dj = abs(fract(vPath.y / 1.5) - 0.5) * 1.5;
+    float jt = clamp((0.008 - dj) / max(pix, 1e-4) + 0.5, 0.0, 1.0) * (1.0 - smoothstep(0.012, 0.06, pix));
+    col = vec3(0.36, 0.35, 0.33) * n * (1.0 - 0.35 * jt);
+  }
+  // a few cm of shade where the surface meets the verge
+  col *= 1.0 - 0.3 * (1.0 - smoothstep(0.0, 0.07, inner));
+  diffuseColor.rgb = col;
+  diffuseColor.a = edge;
+}`,
+      );
+  };
+  return patchMaterial(mat, { key: `paths${kind}`, depthBias: 0.006 });
 }
 
 function tuftGeometry(reg: { u0: number; v0: number; u1: number; v1: number }): THREE.BufferGeometry {
@@ -93,6 +164,8 @@ function rockGeometry(): THREE.BufferGeometry {
 interface Chunk {
   index: number;
   meshes: THREE.InstancedMesh[];
+  /** Footpath ribbons of the chunk (city biomes). */
+  paths?: THREE.Mesh;
 }
 
 export interface GroundCoverOptions {
@@ -133,6 +206,9 @@ export class GroundCover extends THREE.Group {
   private biome: Biome;
   private roadGrid = new Map<number, number[]>();
   private roadSegs: number[] = [];
+  private pathMat: THREE.Material | null = null;
+  private pathLines: { pts: Float32Array; half: number }[] = [];
+  private pathGrid = new Map<number, number[]>();
 
   constructor(o: GroundCoverOptions) {
     super();
@@ -237,6 +313,25 @@ export class GroundCover extends THREE.Group {
         });
       })
       .catch(() => undefined);
+    if (this.biome.lawn || this.biome.streets || this.biome.suburb) {
+      this.pathMat = pathMaterial(this.biome);
+      for (const road of o.roads ?? []) {
+        const w = PATH_WIDTH[road.kind];
+        if (!w || road.pts.length < 4) continue;
+        const id = this.pathLines.length;
+        this.pathLines.push({ pts: road.pts, half: w / 2 });
+        // 64 m grid cells over the line's points (a point every few metres: good enough to find the line near a chunk)
+        const seen = new Set<number>();
+        for (let i = 0; i < road.pts.length; i += 2) {
+          const k = Math.floor(road.pts[i] / 64) * 100003 + Math.floor(road.pts[i + 1] / 64);
+          if (seen.has(k)) continue;
+          seen.add(k);
+          let l = this.pathGrid.get(k);
+          if (!l) this.pathGrid.set(k, (l = []));
+          l.push(id);
+        }
+      }
+    }
     for (const road of o.roads ?? []) {
       if (road.kind === 'path' || road.kind === 'footway') continue;
       const hw = road.width / 2 + 0.6;
@@ -298,6 +393,10 @@ export class GroundCover extends THREE.Group {
           m.dispose();
           if (m.userData.ownGeometry) m.geometry.dispose();
         }
+        if (chunk.paths) {
+          this.remove(chunk.paths);
+          chunk.paths.geometry.dispose();
+        }
         this.chunks.delete(c);
       }
     }
@@ -322,7 +421,7 @@ export class GroundCover extends THREE.Group {
       const rx = Math.cos(h), rz = Math.sin(h);
       for (const side of [-1, 1]) {
         // a mown park lawn is turf: only a few longer tufts along the edge and around the trees
-        const tries = Math.round(120 * density * (B.suburb ? 0.22 : B.lawn || B.streets ? 0.1 : 1));
+        const tries = Math.round(120 * density * (B.suburb ? 0.14 : B.lawn || B.streets ? 0.05 : 1));
         for (let k = 0; k < tries; k++) {
           const u = r();
           // denser verge right next to the asphalt, patchier meadow further out
@@ -332,6 +431,7 @@ export class GroundCover extends THREE.Group {
           const z = route.z[i] + rz * d * side + fz * t;
           const near = index.nearest(x, z, halfWidth + 1.2);
           if (near.index >= 0 && near.dist < halfWidth + 0.5) continue;
+          if (B.streets && d < halfWidth + STREET_LEDGE + 0.1) continue;
           if (this.onOtherRoad(x, z)) continue;
           if (isWater?.(x, z)) continue;
           const cover = this.o.coverAt?.(x, z) ?? 0;
@@ -446,6 +546,9 @@ export class GroundCover extends THREE.Group {
     const q = new THREE.Quaternion();
     const up = new THREE.Vector3(0, 1, 0);
     const col = new THREE.Color();
+    const cityLawn = !!(this.biome.lawn || this.biome.streets);
+    const tiltQ = new THREE.Quaternion();
+    const tiltAxis = new THREE.Vector3();
     // the atlas grass is near-neutral; the biome sets the meadow colour
     const [lush, dry, pale] = this.biome.grass;
     const add = (
@@ -472,7 +575,12 @@ export class GroundCover extends THREE.Group {
       for (let k = 0; k < n; k++) {
         const [x, y, z, sc, rot, alpine] = arr.slice(k * 6, k * 6 + 6);
         q.setFromAxisAngle(up, rot);
-        m.compose(new THREE.Vector3(x, y, z), q, new THREE.Vector3(sc, sc * tall, sc));
+        if (turf && cityLawn) {
+          // no two clumps alike: width, height and lean vary, some are mirrored; a stamped row of one tuft reads as fake
+          const h1 = (rot * 7.31) % 1, h2 = (rot * 13.17 + 0.37) % 1, h3 = (rot * 29.9 + 0.71) % 1;
+          q.multiply(tiltQ.setFromAxisAngle(tiltAxis.set(Math.cos(rot * 5.0), 0, Math.sin(rot * 5.0)), (h3 - 0.5) * 0.5));
+          m.compose(new THREE.Vector3(x, y, z), q, new THREE.Vector3(sc * (0.6 + 0.9 * h1) * (h2 < 0.5 ? -1 : 1), sc * tall * (0.45 + 0.85 * h2), sc * (0.6 + 0.9 * h3)));
+        } else m.compose(new THREE.Vector3(x, y, z), q, new THREE.Vector3(sc, sc * tall, sc));
         mesh.setMatrixAt(k, m);
         if (tint && alpine === 1 && this.biome.shrubTint) {
           // shrub cushions (flag 1): their own green
@@ -480,6 +588,8 @@ export class GroundCover extends THREE.Group {
         } else if (tint) {
           const v = (Math.sin(x * 0.21 + z * 0.13) + Math.sin(z * 0.17 - x * 0.05)) * 0.25 + 0.5;
           col.copy(lush).lerp(dry, v * 0.6).lerp(pale, alpine * 0.7).multiplyScalar(0.82 + 0.18 * ((rot * 13.7) % 1));
+          // park and street lawns: the rough tufts range from dark green to bleached straw
+          if (cityLawn) col.lerp(dry, ((rot * 3.3) % 1) * 0.8).multiplyScalar(0.7 + 0.45 * ((rot * 17.1) % 1));
           mesh.setColorAt(k, col);
         }
       }
@@ -496,7 +606,112 @@ export class GroundCover extends THREE.Group {
     add(this.flowerTuft, this.flowerMat, flowers, 1.0, false, true, true);
     add(this.rock, this.rockMat, rocks, 1, true, false);
     if (this.fern && this.fernMat) add(this.fern, this.fernMat, ferns, 1, false, false);
-    this.chunks.set(ci, { index: ci, meshes });
+    this.chunks.set(ci, { index: ci, meshes, paths: this.buildPaths(ci) });
+  }
+
+  /** Footpath ribbons within reach of a chunk, draped on the terrain, cut where they would run over the carriageway. */
+  private buildPaths(ci: number): THREE.Mesh | undefined {
+    if (!this.pathMat || !this.pathLines.length) return undefined;
+    const { route, index, halfWidth, groundHeight } = this.o;
+    const i0 = Math.floor((ci * CHUNK) / route.step);
+    const i1 = Math.min(route.n - 1, Math.floor(((ci + 1) * CHUNK) / route.step));
+    const M = 55;
+    let x0 = Infinity, x1 = -Infinity, z0 = Infinity, z1 = -Infinity;
+    for (let i = i0; i <= i1; i++) {
+      x0 = Math.min(x0, route.x[i]);
+      x1 = Math.max(x1, route.x[i]);
+      z0 = Math.min(z0, route.z[i]);
+      z1 = Math.max(z1, route.z[i]);
+    }
+    x0 -= M; x1 += M; z0 -= M; z1 += M;
+    const ids = new Set<number>();
+    for (let cz = Math.floor(z0 / 64); cz <= Math.floor(z1 / 64); cz++) {
+      for (let cx = Math.floor(x0 / 64); cx <= Math.floor(x1 / 64); cx++) for (const id of this.pathGrid.get(cx * 100003 + cz) ?? []) ids.add(id);
+    }
+    if (!ids.size) return undefined;
+    const clear = halfWidth + (this.biome.streets ? STREET_LEDGE : 0.6) + 0.2;
+    const pos: number[] = [];
+    const puv: number[] = [];
+    const idx: number[] = [];
+    const STEP = 3;
+    for (const id of ids) {
+      const { pts, half } = this.pathLines[id];
+      // resample at ~3 m so the ribbon follows the terrain
+      const px: number[] = [];
+      const pz: number[] = [];
+      for (let i = 0; i + 3 < pts.length; i += 2) {
+        const ax = pts[i], az = pts[i + 1], dx = pts[i + 2] - ax, dz = pts[i + 3] - az;
+        const n = Math.max(1, Math.round(Math.hypot(dx, dz) / STEP));
+        for (let k = 0; k < n; k++) {
+          px.push(ax + (dx * k) / n);
+          pz.push(az + (dz * k) / n);
+        }
+      }
+      px.push(pts[pts.length - 2]);
+      pz.push(pts[pts.length - 1]);
+      let run: number[] = []; // point indices of the current piece
+      let along = 0;
+      const flush = () => {
+        if (run.length >= 2) {
+          const base = pos.length / 3;
+          let a = along;
+          for (let r = 0; r < run.length; r++) {
+            const j = run[r];
+            const jp = run[Math.max(0, r - 1)], jn = run[Math.min(run.length - 1, r + 1)];
+            let tx = px[jn] - px[jp], tz = pz[jn] - pz[jp];
+            const tl = Math.hypot(tx, tz) || 1;
+            tx /= tl;
+            tz /= tl;
+            if (r > 0) a += Math.hypot(px[j] - px[run[r - 1]], pz[j] - pz[run[r - 1]]);
+            const nx = -tz, nz = tx;
+            // Vienna: gravel inside parks (z < 0), paved sidewalk outside
+            const park = this.biome.streets && (this.o.coverAt?.(px[j], pz[j]) ?? 0) === 1;
+            const e = half + 0.06;
+            for (const sgn of [-1, 1]) {
+              const vx = px[j] + nx * e * sgn, vz = pz[j] + nz * e * sgn;
+              const vy = groundHeight(vx, vz);
+              pos.push(vx, Number.isFinite(vy) ? vy + 0.05 : NaN, vz);
+              puv.push(sgn * e, a, park ? -half : half);
+            }
+          }
+          for (let r = 0; r + 1 < run.length; r++) {
+            const b = base + r * 2;
+            const ys = [pos[b * 3 + 1], pos[(b + 1) * 3 + 1], pos[(b + 2) * 3 + 1], pos[(b + 3) * 3 + 1]];
+            if (ys.every(Number.isFinite)) idx.push(b, b + 1, b + 2, b + 1, b + 3, b + 2);
+          }
+        }
+        run = [];
+        along += 1000;
+      };
+      for (let j = 0; j < px.length; j++) {
+        const inBox = px[j] > x0 && px[j] < x1 && pz[j] > z0 && pz[j] < z1;
+        const near = inBox ? index.nearest(px[j], pz[j], clear + 1) : null;
+        const onRoad = !!near && near.index >= 0 && near.dist < clear;
+        if (!inBox || onRoad) {
+          flush();
+          continue;
+        }
+        run.push(j);
+      }
+      flush();
+    }
+    if (!idx.length) return undefined;
+    // unreachable (NaN) vertices are not referenced by any triangle, but keep the buffers finite
+    for (let k = 1; k < pos.length; k += 3) if (!Number.isFinite(pos[k])) pos[k] = 0;
+    const geo = new THREE.BufferGeometry();
+    geo.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+    geo.setAttribute('pathUv', new THREE.Float32BufferAttribute(puv, 3));
+    const nor = new Float32Array(pos.length);
+    for (let k = 1; k < nor.length; k += 3) nor[k] = 1;
+    geo.setAttribute('normal', new THREE.BufferAttribute(nor, 3));
+    geo.setIndex(idx);
+    geo.computeBoundingSphere();
+    const mesh = new THREE.Mesh(geo, this.pathMat);
+    mesh.renderOrder = 1;
+    mesh.receiveShadow = true;
+    mesh.frustumCulled = true;
+    this.add(mesh);
+    return mesh;
   }
 
   dispose() {
@@ -506,8 +721,10 @@ export class GroundCover extends THREE.Group {
         m.dispose();
         if (m.userData.ownGeometry) m.geometry.dispose();
       }
+      chunk.paths?.geometry.dispose();
     }
     this.chunks.clear();
+    this.pathMat?.dispose();
     this.tuft.dispose();
     this.flowerTuft.dispose();
     this.cushion.dispose();
