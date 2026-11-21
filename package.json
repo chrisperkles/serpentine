@@ -1,7 +1,7 @@
 {
   "name": "serpentine",
   "private": true,
-  "version": "1.1.1",
+  "version": "1.1.2",
   "description": "Indoor cycling on real roads: a home-made Zwift for smart trainers.",
   "author": "Chris Perkles",
   "main": "dist-electron/main.cjs",
