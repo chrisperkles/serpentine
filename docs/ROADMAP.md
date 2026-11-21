@@ -101,9 +101,65 @@ instead of on one road.
 
 ## Art: every route to APPROVE
 
-No route has passed the art review yet (`docs/art/scorecard.md`; best scores 3.13 for the Kitzbüheler Horn and
-Großglockner after round 3). One route per round through the brief → capture → review loop in CLAUDE.md, the
-famous climbs first: Alpe d'Huez, Ventoux, Stelvio, then Gaisberg again with the shared fixes since its review.
+No route has passed the art review yet (`docs/art/scorecard.md`). The loop is brief → build → capture → review, as
+in CLAUDE.md. What Chris cares about (2026-11-21): the surroundings — trees, buildings, the feel of the real place.
+Not road cracks or asphalt detail.
+
+### Where we left off (2026-11-21)
+
+Released in 1.1.1: Central Park, the Vienna Ring and Sydney each got their own look (they had been drawn with
+the Alpine one). On `main` since, not yet released (the next release is 1.1.2): near-camera ground on the city
+routes, more building relief, varied people and traffic, Gaisberg on 1 m lidar terrain with vegetated cut banks.
+
+Last independent scores (Haiku reviewer, no photo boards, so provisional; taken before the people round and the
+Gaisberg work): Central Park 3.25, Vienna Ring 3.13, Sydney 3.38. Gaisberg has no score since the lidar.
+Reviews are in `research/<route>/review-*.md`; before/after sheets are in `~/Desktop/Serpentine Routes/`.
+
+How the work was done: one agent per topic (Sonnet for code, Haiku for look-only reviews and data hunts), each in
+its own git worktree with its own Vite port and its own files, merged into one branch and checked with
+same-settings stills. See the entries from 2026-11-21 in `docs/lessons.md`.
+
+### Next, in this order
+
+1. **Fix before releasing 1.1.2.**
+   - Vienna's tram is a red box whose windows break into a comb pattern where it bends (`Tram.ts`). It needs a real
+     model (bogies, doors, a pantograph, the wire).
+   - A runner on the lawn at Sydney km 11.0 is drawn far too big next to the rider (`People.ts` scale or a figure
+     standing closer to the camera than it looks; check).
+   - The yellow post van in Vienna: colour fixed but never seen in a still. `tinted()` in `Life.ts` converts
+     colours to linear twice; fix that properly rather than writing paler hex values.
+   - Then a reviewer round on all four routes and a ride in motion: nothing from the people round or Gaisberg has
+     been watched moving.
+2. **Photo boards.** No city route has a reference board, so every score is provisional and the reviewer misreads
+   things. Chris's own photos or licensed ones; nothing scraped.
+3. **Lidar for the other Austrian routes.** The BEV 1 m ground model covers all of Austria (CC BY 4.0). The pipeline
+   is `scripts/bake-dem.py --corridor` on a windowed read of
+   `https://data.bev.gv.at/download/ALS/DTM/20250915/ALS_DTM_CRS3035RES50000mN{N}E{E}.tif`: Kitzbüheler Horn,
+   Großglockner, Wolfgangsee, Wachau, Neusiedler See. Chris has not picked the order. Spain (CNIG MDT02), France
+   (RGE ALTI) and South Tyrol have their own lidar; licences not checked yet.
+4. **Gaisberg, what is still wrong.** No real ditch at the foot of the banks (needs geometry or a distance field,
+   the verge mask is 4.5 m wide); shaded drop-off sides are flat teal-grey; saplings read as blobs; no retaining
+   walls or wire mesh on fresh cuts; a 0.3–1.3 m step where lidar meets the global terrain (hidden by skirts);
+   `prefetch.ts` does not fetch the fine tiles for offline use.
+5. **Central Park.** The skyline is still a grey-blue band where the slim 57th Street towers cannot be picked out;
+   apartment-house detail does not read from 200 m; the twin-towered houses are placed by size, not at the real
+   San Remo, Eldorado, Majestic and Century; tree crowns repeat one rounded shape from above; bare earth under
+   trees reads as brown discs; no Bethesda Terrace, Bow Bridge or arches; a chicane is left at km 8.3.
+6. **Vienna Ring.** Big roofs (University, museums) are bare planes; cornices read as loose slabs from very close;
+   mottled dark blotches on lawns and paving; traffic is two-way on a one-way carriageway; no dedicated models
+   for Rathaus, Parliament, Votivkirche, Opera; courtyards are filled in; avenue rows have gaps.
+7. **Sydney.** Suburbs are lawn everywhere outside roads and paths (no driveways, fences, gardens); one oversized
+   house and one windowless slab; fig trunks too thin; Bondi Pavilion's roof is plain slabs; no Icebergs pool in
+   view, Bronte baths or Coogee jetty; Norfolk pines are placed by rule, not surveyed; the sun path for the
+   southern hemisphere was never checked.
+8. **Spurs in the other loops.** `node scripts/bake-routes.mjs --despur` lists dead-end spurs in Vienna Ring,
+   Sydney, Wachau, Neusiedler See and Wolfgangsee (the rider turns on the spot). Only Central Park was cleaned,
+   because cleaning shortens a route and shifts best times. Chris has not decided.
+9. **The other mountain routes** (the first idea list of 2026-11-21, still open): scanned ground within 60 m of
+   the camera instead of the aerial photo, a real road edge (shoulder, crumbling edge, grass creeping in), dense
+   short grass and flowers near the camera with wind, hero trees, better skies and softer near shadows per time
+   preset, hand-built landmarks where reviews keep rejecting generic blocks (Stelvio's pass hotels, Kitzbühel).
+   The vegetated cut banks already apply to every Alpine route; only Kitzbüheler Horn was looked at afterwards.
 
 ## Later
 
