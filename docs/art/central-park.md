@@ -37,7 +37,8 @@ row houses of 4 to 5 floors. Midtown: glass curtain walls. Shapes, heights, colo
 building parts where mapped. What must never appear: pitched tile roofs, plaster farmhouses, shutters, balconies with
 flowers.
 
-**Landmarks.** Not built yet: the stone wall around the park, the Reservoir fence, Bethesda Terrace, Bow Bridge, the
+**Landmarks.** Built: the schist wall around the park, a black railing at the Reservoir (not yet seen in a still).
+Not built yet: Bethesda Terrace, Bow Bridge, the
 Met's rear facade, the arches and bridges over and under the drive.
 
 **Life.** No cars (the drives have been closed to traffic since 2018). Runners and walkers in the inside lane and on
@@ -66,5 +67,8 @@ needed before any score counts as final.
 
 ## Status
 
-First pass 2026-11-21. First review REJECT 3.00 (built 2, place 2), `research/central-park/review-2026-11-21.md`; no board yet.
+Second pass 2026-11-21 (facades with cornices and shop fronts, elm/plane/oak, people, benches, the perimeter wall,
+outcrops). Reviews: r1 REJECT 3.00 (built 2, place 2), r2 REJECT 3.25 (built 3, place 3),
+`research/central-park/review-2026-11-21-r2.md`; no board yet. Next: skyline towers that can be told apart (C1),
+apartment-house detail that reads from 200 m (C2), lawn tufts and speckle, people in the capture frames.
 A small chicane is left at km 8.3 where the route swings through the 72nd Street junction.
