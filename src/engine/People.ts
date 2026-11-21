@@ -287,3 +287,21 @@ export function leashGeometry(a: THREE.Vector3, b: THREE.Vector3): THREE.BufferG
   g.translate((a.x + b.x) / 2, (a.y + b.y) / 2, (a.z + b.z) / 2);
   return merged([[g, new THREE.Color(0.35, 0.05, 0.05)]]);
 }
+
+/** A beach towel or picnic rug lying flat: a coloured slab with a pale stripe, centred, 0.8 × 1.8 m. */
+export function towelGeometry(colour: string, stripe: string): THREE.BufferGeometry {
+  const c = new THREE.Color(colour), s = new THREE.Color(stripe);
+  return merged([
+    [box(0.85, 0.02, 1.8, 0, 0.012, 0), c],
+    [box(0.85, 0.022, 0.16, 0, 0.013, -0.45), s],
+    [box(0.85, 0.022, 0.16, 0, 0.013, 0.45), s],
+  ]);
+}
+
+/** A surfboard standing on its tail in the sand: a flat ellipsoid, 2.1 m tall, with a stripe down the middle. */
+export function surfboardGeometry(colour: string, stripe: string): THREE.BufferGeometry {
+  const c = new THREE.Color(colour), s = new THREE.Color(stripe);
+  const body = new THREE.SphereGeometry(1, 12, 10).scale(0.27, 1.05, 0.04).translate(0, 1.0, 0);
+  const rail = new THREE.SphereGeometry(1, 8, 8).scale(0.04, 0.95, 0.045).translate(0, 1.02, 0);
+  return merged([[body, c], [rail, s]]);
+}

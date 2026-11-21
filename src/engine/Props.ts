@@ -10,6 +10,7 @@ import { loadModel } from './Landmarks.ts';
 import { mergeVertices } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
 import { mergeColored } from './Road.ts';
 import type { Biome } from './biome.ts';
+import { lonLatToWorld } from '../geo/mercator.ts';
 import { markShared, WorldGroup } from './dispose.ts';
 import { tramLines, tramTrack } from './Tram.ts';
 
@@ -78,7 +79,7 @@ export class Props extends WorldGroup {
     }
     // firewood stacks against farmhouse walls near the road
     osm.buildings.forEach((b, i) => {
-      if (biome?.streets || !['house', 'farm', 'farm_auxiliary', 'barn', 'yes', 'detached'].includes(b.kind)) return;
+      if (biome?.streets || biome?.suburb || !['house', 'farm', 'farm_auxiliary', 'barn', 'yes', 'detached'].includes(b.kind)) return;
       if (hash(i * 7) > 0.32) return;
       const spot = besideWall(b, i);
       if (!spot) return;
@@ -91,6 +92,7 @@ export class Props extends WorldGroup {
     this.add(this.towers(osm, groundAt, models, biome));
     this.add(this.fences(osm, index, groundAt, halfWidth, biome));
     if (biome?.viennaLamps) this.add(viennaLamps(route, index, osm, groundAt, halfWidth));
+    if (biome?.id === 'sydney') this.add(sydneyLandmarks(route, index, osm, groundAt));
     if (biome?.streets && osm.trams.length) this.add(tramTrack(tramLines(osm, index, halfWidth + 0.4), groundAt));
     if (biome?.carFree) {
       this.add(parkFurniture(route, index, osm, groundAt, halfWidth));
@@ -901,5 +903,152 @@ function viennaLamps(
   m.castShadow = true;
   m.computeBoundingSphere();
   g.add(m);
+  return g;
+}
+
+
+/**
+ * Sydney landmarks that the route sees but OSM and the canopy model do not give us. Positions are real (lon, lat), the
+ * shapes are boxes: Bondi Pavilion (a long cream Mediterranean-revival hall behind the beach with an arcade, a raised
+ * centre and a terracotta roof), the Icebergs club and its ocean pool at the south end of the beach, and the white
+ * headstones of Waverley Cemetery on the cliff top between Tamarama and Bronte. Each is skipped when the ground
+ * there is missing or under water.
+ */
+function sydneyLandmarks(route: Route, index: RouteIndex, osm: OsmWorld, groundAt: (x: number, z: number) => number): THREE.Object3D {
+  const g = new THREE.Group();
+  const srgb = (r: number, gg: number, b: number) => new THREE.Color().setRGB(r, gg, b, THREE.SRGBColorSpace);
+  const cream = srgb(0.93, 0.89, 0.78), terracotta = srgb(0.55, 0.28, 0.2), white = srgb(0.96, 0.96, 0.94), shade = srgb(0.16, 0.14, 0.12);
+  const parts: [THREE.BufferGeometry, THREE.Color][] = [];
+  const stones: THREE.Matrix4[] = [];
+  const fx = route.frame;
+  /** A box on the ground at (x, z), long axis along `yaw`, from y0 to y1 above the local ground. */
+  const box = (x: number, z: number, yaw: number, lx: number, lz: number, y0: number, y1: number, c: THREE.Color, du = 0, dv = 0) => {
+    const gy = groundAt(x, z);
+    if (!Number.isFinite(gy)) return;
+    const cu = Math.cos(yaw), su = Math.sin(yaw);
+    const geo = new THREE.BoxGeometry(lx, y1 - y0, lz).translate(0, (y0 + y1) / 2, 0).rotateY(-yaw).translate(x + cu * du - su * dv, gy, z + su * du + cu * dv);
+    parts.push([geo, c]);
+  };
+  /** A hipped roof over a rectangle. */
+  const roof = (x: number, z: number, yaw: number, lx: number, lz: number, y: number, rise: number, c: THREE.Color) => {
+    const gy = groundAt(x, z);
+    if (!Number.isFinite(gy)) return;
+    const geo = new THREE.ConeGeometry(1, 1, 4, 1).rotateY(Math.PI / 4).scale(lx * 0.7071, rise, lz * 0.7071).translate(0, y + rise / 2, 0).rotateY(-yaw).translate(x, gy, z);
+    parts.push([geo, c]);
+  };
+  const at = (lon: number, lat: number) => lonLatToWorld(fx, lon, lat);
+  // the road along the beach runs north-south: the buildings sit parallel to it
+  const yawNear = (x: number, z: number) => {
+    const n = index.nearest(x, z, 400);
+    return n.index >= 0 ? route.heading[n.index] - Math.PI / 2 : 0;
+  };
+  // Bondi Pavilion: 90 m x 16 m, two storeys at the ends and a raised, gabled centre; the arcade faces the beach (east)
+  {
+    let [x, z] = at(151.27425, -33.89138);
+    const near = index.nearest(x, z, 150);
+    if (near.index >= 0) {
+      const yaw = yawNear(x, z);
+      const L = 78, D = 15;
+      // the real hall stands back from the road: nudge it away from the route until its arcade is 14 m clear
+      const need = D / 2 + 2.3 + 14;
+      const ax = x - route.x[near.index], az = z - route.z[near.index], al = Math.hypot(ax, az) || 1;
+      if (near.dist < need) {
+        x += (ax / al) * (need - near.dist);
+        z += (az / al) * (need - near.dist);
+      }
+      box(x, z, yaw, L, D, -0.6, 5.2, cream);
+      box(x, z, yaw, 30, D + 1, -0.6, 7.6, cream);
+      roof(x, z, yaw, L + 1.4, D + 1.8, 5.2, 2.4, terracotta);
+      roof(x, z, yaw, 31, D + 2.6, 7.6, 2.8, terracotta);
+      // arcade: dark openings between white piers along both long sides
+      for (const sd of [-1, 1]) {
+        box(x, z, yaw, L - 4, 0.3, 0.2, 3.3, shade, 0, sd * (D / 2 + 0.05));
+        for (let k = -Math.floor(L / 8); k <= Math.floor(L / 8); k++) box(x, z, yaw, 0.7, 0.7, -0.5, 3.6, white, k * 4.2, sd * (D / 2 + 1.5));
+        box(x, z, yaw, L - 3, 1.7, 3.5, 4.0, white, 0, sd * (D / 2 + 0.75));
+        // upper windows on the long faces
+        for (let k = -Math.floor(L / 9); k <= Math.floor(L / 9); k++) box(x, z, yaw, 1.0, 0.1, 3.3, 4.8, srgb(0.2, 0.26, 0.32), k * 4.2 + 2.1, sd * (D / 2 + 0.05));
+        for (let k = -3; k <= 3; k++) box(x, z, yaw, 1.0, 0.1, 5.7, 7.0, srgb(0.2, 0.26, 0.32), k * 4.2, sd * (D / 2 + 0.55));
+      }
+    }
+  }
+  // Bondi Icebergs: the club above a 50 m ocean pool on the rock shelf at the south end of the beach
+  {
+    const [x, z] = at(151.27755, -33.89455);
+    const near = index.nearest(x, z, 500);
+    if (near.index >= 0) {
+      const yaw = yawNear(x, z);
+      box(x, z, yaw, 26, 11, -0.6, 7.5, white);
+      box(x, z, yaw, 26.6, 11.6, 7.5, 7.9, srgb(0.82, 0.84, 0.86));
+      box(x, z, yaw, 24, 0.2, 2.6, 6.2, srgb(0.3, 0.45, 0.55), 0, 5.55);
+      // the pool, a turquoise slab just above the shelf, with a white kerb round it
+      box(x, z, yaw, 50, 20, 0.0, 0.12, white, 6, 24);
+      box(x, z, yaw, 47.5, 17.5, 0.0, 0.2, srgb(0.1, 0.55, 0.62), 6, 24);
+    }
+  }
+  // Waverley Cemetery: rows of headstones on the cliff top, between the coast walk and Bronte Road
+  {
+    const hash = (n: number) => {
+      const t = Math.sin(n * 127.1 + 311.7) * 43758.5453;
+      return t - Math.floor(t);
+    };
+    // the route runs round three sides of it (Bronte Road on the west, the roads north and south); the cliffs are the fourth
+    const poly: [number, number][] = [[151.2643, -33.9074], [151.2696, -33.9074], [151.2699, -33.9086], [151.2692, -33.9099], [151.2646, -33.9099]];
+    const wp = poly.map(([lo, la]) => at(lo, la));
+    const inside = (x: number, z: number) => {
+      let c = false;
+      for (let i = 0, j = wp.length - 1; i < wp.length; j = i++) {
+        const [xi, zi] = wp[i], [xj, zj] = wp[j];
+        if (zi > z !== zj > z && x < ((xj - xi) * (z - zi)) / (zj - zi) + xi) c = !c;
+      }
+      return c;
+    };
+    const xs = wp.map((p) => p[0]), zs = wp.map((p) => p[1]);
+    const x0 = Math.min(...xs), x1 = Math.max(...xs), z0 = Math.min(...zs), z1 = Math.max(...zs);
+    const nearBuildings = osm.buildings.filter((b) => {
+      for (let i = 0; i < b.ring.length; i += 2) if (b.ring[i] > x0 - 30 && b.ring[i] < x1 + 30 && b.ring[i + 1] > z0 - 30 && b.ring[i + 1] < z1 + 30) return true;
+      return false;
+    });
+    const q = new THREE.Quaternion(), up = new THREE.Vector3(0, 1, 0);
+    const yaw = -0.35;
+    // rows in a grid turned about the polygon's middle
+    const cx = (x0 + x1) / 2, cz = (z0 + z1) / 2, R = Math.hypot(x1 - x0, z1 - z0) / 2;
+    const c = Math.cos(yaw), s = Math.sin(yaw);
+    for (let u = -R; u < R; u += 3.6) {
+      for (let v = -R; v < R; v += 6) {
+        // with the odd gap and a path every few rows
+        const x = cx + u * c - v * s, z = cz + u * s + v * c;
+        if (!inside(x, z) || hash(u * 3.1 + v * 7.7) < 0.22 || Math.round((v + R) / 6) % 9 === 0) continue;
+        const near = index.nearest(x, z, 400);
+        if (near.index < 0 || near.dist < 7) continue;
+        // not in a garden or on a building (the polygon is a rough outline)
+        if (nearBuildings.some((b) => b.ring.length >= 6 && inRingXZ(b.ring, x, z))) continue;
+        const y = groundAt(x, z);
+        if (!Number.isFinite(y) || y < 3) continue;
+        q.setFromAxisAngle(up, yaw + (hash(u + v) - 0.5) * 0.15);
+        const h = 0.7 + hash(u * v) * 0.7;
+        stones.push(new THREE.Matrix4().compose(new THREE.Vector3(x, y, z), q, new THREE.Vector3(1, h, 1)));
+      }
+    }
+  }
+  const mat = patchMaterial(new THREE.MeshLambertMaterial({ vertexColors: true }), { key: 'sydlandmark' });
+  if (parts.length) {
+    const m = new THREE.Mesh(mergeColored(parts), mat);
+    m.castShadow = true;
+    m.receiveShadow = true;
+    g.add(m);
+  }
+  if (stones.length) {
+    // a headstone: a pale slab with a rounded top, some with a low kerb
+    const geo = mergeColored([
+      [new THREE.BoxGeometry(0.7, 1.05, 0.14).translate(0, 0.52, 0), srgb(0.93, 0.93, 0.9)],
+      [new THREE.CylinderGeometry(0.35, 0.35, 0.14, 8).rotateX(Math.PI / 2).translate(0, 1.05, 0), srgb(0.93, 0.93, 0.9)],
+      [new THREE.BoxGeometry(0.9, 0.12, 1.9).translate(0, 0.06, 1.0), srgb(0.78, 0.76, 0.72)],
+    ]);
+    const m = new THREE.InstancedMesh(geo, mat, stones.length);
+    stones.forEach((x, i) => m.setMatrixAt(i, x));
+    m.castShadow = true;
+    m.computeBoundingSphere();
+    g.add(m);
+  }
   return g;
 }

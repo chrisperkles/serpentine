@@ -87,15 +87,18 @@ export function sydneyGround(route: Route, osm: OsmWorld, heightAt: (x: number, 
   };
 }
 
-export type SydneySpecies = 'gum' | 'pine' | 'fig' | 'street';
+export type SydneySpecies = 'gum' | 'angophora' | 'coastal' | 'pine' | 'fig' | 'street';
 
 /**
  * Species for one canopy peak. Norfolk pines line the beachfronts (taller trees, within ~250 m of the sea, more
- * of them right at it); figs spread over the parks; the rest are eucalypts and street trees.
+ * of them right at it); figs spread over the parks; small peaks are coastal shrubs (banksia, tea-tree); the rest
+ * are tall gums, angophoras and street trees.
  */
 export function sydneySpecies(seaDist: number, park: boolean, h: number, rand: number, rand2: number): SydneySpecies {
   if (h >= 8 && seaDist < 200 && rand < 0.7) return 'pine';
   if (h >= 8 && seaDist < 380 && rand < 0.3) return 'pine';
-  if (park && h >= 12) return rand2 < 0.32 ? 'fig' : rand2 < 0.8 ? 'gum' : 'street';
-  return rand2 < 0.4 ? 'gum' : 'street';
+  if (park && h >= 12) return rand2 < 0.3 ? 'fig' : rand2 < 0.6 ? 'gum' : rand2 < 0.82 ? 'angophora' : 'street';
+  if (h < 7) return rand2 < (seaDist < 400 ? 0.75 : 0.45) ? 'coastal' : 'street';
+  if (seaDist < 300 && rand2 < 0.25) return 'coastal';
+  return rand2 < 0.4 ? 'gum' : rand2 < 0.58 ? 'angophora' : 'street';
 }

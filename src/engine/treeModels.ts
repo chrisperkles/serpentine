@@ -610,71 +610,159 @@ export function parkTreeGeometry(species: ParkSpecies, seed = 1, width = 1): THR
 // ---- Sydney's east coast (biome.sydneyTrees): eucalypt, Moreton Bay fig, Norfolk Island pine, street tree ----
 
 /**
- * Sydney eucalypt (blue gum / spotted gum), height 1: a tall, pale, smooth trunk, a few steep forking limbs and
- * an open, uneven crown of drooping leaf clumps with sky between them. `lush` adds clumps (garden and street trees).
+ * A clump of hanging leaf cards: gum leaves are long, narrow and droop, so cards are taller than wide, lean outward
+ * and darken towards their lower edge. `open` thins a clump so sky shows through the crown.
  */
-export function eucalyptGeometry(seed = 1, lush = 0.5): THREE.BufferGeometry {
+function hangClump(b: Builder, r: () => number, c: THREE.Vector3, R: number, cards: number, crownLo: number, crownHi: number, size = 1) {
+  for (let q = 0; q < cards; q++) {
+    const a = r() * Math.PI * 2;
+    const d = Math.sqrt(r()) * R;
+    const ctr = c.clone().add(new THREE.Vector3(Math.cos(a) * d, (r() - 0.6) * R * 0.6, Math.sin(a) * d));
+    const sa = r() * Math.PI;
+    const sw = (0.045 + r() * 0.035) * size, sh = sw * (1.5 + r() * 0.9);
+    const e1 = new THREE.Vector3(Math.cos(sa), 0, Math.sin(sa)).multiplyScalar(sw);
+    // a drooping card hangs from its top edge and swings out a little
+    const e2 = new THREE.Vector3(Math.cos(a) * sh * 0.18, sh, Math.sin(a) * sh * 0.18);
+    const n = new THREE.Vector3(-Math.sin(sa), 0.55, Math.cos(sa)).normalize();
+    const rel = Math.min(1, Math.max(0, (ctr.y - crownLo) / Math.max(0.05, crownHi - crownLo)));
+    const aoT = 0.7 + 0.3 * rel, aoB = aoT * 0.66;
+    b.quadC(
+      [ctr.clone().sub(e1).sub(e2), ctr.clone().add(e1).sub(e2), ctr.clone().add(e1).add(e2), ctr.clone().sub(e1).add(e2)],
+      [n, n, n, n], REGIONS.leaves, [[aoB, aoB, aoB], [aoB, aoB, aoB], [aoT, aoT, aoT], [aoT, aoT, aoT]], q % 2 === 0,
+    );
+  }
+}
+
+/**
+ * Sydney's gums, height 1, built in three shapes:
+ *  - `tall`: a spotted, lemon-scented or blue gum. A tall straight trunk, pale cream-grey and smooth with a dark shed
+ *    stocking, forking high into a few ascending limbs; a small, open crown of drooping grey-green clumps, wider at
+ *    the top, with sky between them (crown radius ~0.3).
+ *  - `spread`: an angophora ("Sydney red gum"). A short, thick, salmon-pink trunk that twists, and a few big
+ *    sinuous limbs that carry the crown out wide in layers (crown radius ~0.46).
+ *  - `coastal`: banksia and tea-tree. A crooked dark trunk and a dense, rounded dome of small clumps (crown radius ~0.36).
+ * Trunk radii are in crown-width units (see the lessons entry about the 4 m fig trunk).
+ */
+export function gumGeometry(kind: 'tall' | 'spread' | 'coastal', seed = 1): THREE.BufferGeometry {
   const b = new Builder();
-  const r = rng(seed);
-  const reg = REGIONS.barkLight;
-  // smooth bark: cream to grey, with a darker rough stocking on the lowest metre (the texture alone is too brown)
+  const r = rng(seed * 7 + (kind === 'tall' ? 1 : kind === 'spread' ? 2 : 3));
+  const reg = kind === 'coastal' ? REGIONS.barkDark : REGIONS.barkLight;
   const bark = (i: number, k: number): RGB => {
     const n = Math.sin(i * 7.7 + k * 31.1 + seed) * 0.5 + 0.5;
-    const stocking = i < 2 ? 0.55 : 1;
-    const v = (1.45 + n * 0.45) * stocking;
-    return [v * 1.0, v * 0.95, v * 0.86];
-  };
-  const fork = 0.34 + r() * 0.1;
-  const lean = new THREE.Vector3((r() - 0.5) * 0.06, 0, (r() - 0.5) * 0.06);
-  const trunk: THREE.Vector3[] = [];
-  const rad: number[] = [];
-  for (let i = 0; i < 6; i++) {
-    const t = i / 5;
-    trunk.push(new THREE.Vector3(lean.x * t * t, -0.05 + (fork + 0.05) * t, lean.z * t * t));
-    rad.push(0.017 * (i === 0 ? 1.5 : 1.0 - 0.3 * t));
-  }
-  b.tube(trunk, rad, 7, reg, bark);
-  const top = trunk[5].clone();
-  const clumps: THREE.Vector3[] = [];
-  const nl = 4 + Math.floor(r() * 2);
-  const a0 = r() * Math.PI * 2;
-  for (let k = 0; k < nl; k++) {
-    const a = a0 + (k / nl) * Math.PI * 2 + (r() - 0.5) * 0.9;
-    const out = new THREE.Vector3(Math.cos(a), 0, Math.sin(a));
-    const reach = 0.12 + r() * 0.2;
-    const rise = 0.28 + r() * 0.3;
-    const mid = top.clone().addScaledVector(out, reach * 0.4).add(new THREE.Vector3((r() - 0.5) * 0.04, rise * 0.5, 0));
-    const end = top.clone().addScaledVector(out, reach).add(new THREE.Vector3(0, rise, 0));
-    b.tube([top, mid, end], [0.011, 0.0075, 0.0035], 5, reg, bark);
-    clumps.push(end);
-    // a side branch with its own clump
-    const sb = mid.clone().addScaledVector(new THREE.Vector3(-out.z, 0.3, out.x), (r() < 0.5 ? 1 : -1) * (0.09 + r() * 0.08)).addScaledVector(out, 0.05);
-    b.tube([mid, sb], [0.006, 0.003], 4, reg, bark);
-    clumps.push(sb);
-  }
-  clumps.push(top.clone().add(new THREE.Vector3((r() - 0.5) * 0.06, 0.5 + r() * 0.1, (r() - 0.5) * 0.06)));
-  const cards = Math.round(20 + lush * 10);
-  for (const c of clumps) {
-    for (let q = 0; q < cards / 2; q++) {
-      const a = r() * Math.PI * 2;
-      const d = r() * 0.11;
-      // leaves hang: cards taller than wide, lower edge darker, with a lean outward
-      const ctr = c.clone().add(new THREE.Vector3(Math.cos(a) * d, (r() - 0.55) * 0.07, Math.sin(a) * d));
-      const sa = r() * Math.PI;
-      const sw = 0.06 + r() * 0.035, sh = sw * (1.25 + r() * 0.5);
-      const e1 = new THREE.Vector3(Math.cos(sa), 0, Math.sin(sa)).multiplyScalar(sw);
-      const e2 = new THREE.Vector3(0, sh, 0);
-      const n = new THREE.Vector3(-Math.sin(sa), 0.55, Math.cos(sa)).normalize();
-      const rel = Math.min(1, Math.max(0.35, (ctr.y - 0.3) / 0.7));
-      const aoT = 0.62 + 0.38 * rel, aoB = aoT * 0.62;
-      b.quadC(
-        [ctr.clone().sub(e1).sub(e2), ctr.clone().add(e1).sub(e2), ctr.clone().add(e1).add(e2), ctr.clone().sub(e1).add(e2)],
-        [n, n, n, n], REGIONS.leaves, [[aoB, aoB, aoB], [aoB, aoB, aoB], [aoT, aoT, aoT], [aoT, aoT, aoT]], q % 2 === 0,
-      );
+    if (kind === 'tall') {
+      // smooth grey-cream with blotches, and a darker rough stocking on the lowest metre (the texture alone is too brown)
+      const v = (1.45 + n * 0.5) * (i < 2 ? 0.5 : 1);
+      return [v * 0.86, v * 0.92, v * 0.96];
     }
+    if (kind === 'spread') {
+      // salmon pink to orange-tan, with mottled grey patches
+      const v = 1.15 + n * 0.45;
+      return [v * 1.15, v * 0.8, v * 0.62];
+    }
+    const v = 0.55 + n * 0.25;
+    return [v * 1.0, v * 0.88, v * 0.78];
+  };
+  const clumps: { c: THREE.Vector3; R: number; cards: number }[] = [];
+  const V = (x: number, y: number, z: number) => new THREE.Vector3(x, y, z);
+  if (kind === 'tall') {
+    const fork = 0.5 + r() * 0.12;
+    const lean = V((r() - 0.5) * 0.08, 0, (r() - 0.5) * 0.08);
+    const trunk: THREE.Vector3[] = [];
+    const rad: number[] = [];
+    for (let i = 0; i < 7; i++) {
+      const t = i / 6;
+      trunk.push(V(lean.x * t * t + Math.sin(t * 5 + seed) * 0.006, -0.05 + (fork + 0.05) * t, lean.z * t * t + Math.cos(t * 4 + seed) * 0.006));
+      rad.push(0.0155 * (i === 0 ? 1.7 : 1.05 - 0.38 * t));
+    }
+    b.tube(trunk, rad, 7, reg, bark);
+    const top = trunk[6].clone();
+    const nl = 3 + Math.floor(r() * 3);
+    const a0 = r() * Math.PI * 2;
+    for (let k = 0; k < nl; k++) {
+      const a = a0 + (k / nl) * Math.PI * 2 + (r() - 0.5) * 0.8;
+      const out = V(Math.cos(a), 0, Math.sin(a));
+      const reach = 0.1 + r() * 0.2;
+      const rise = 0.26 + r() * 0.2;
+      const mid = top.clone().addScaledVector(out, reach * 0.35).add(V(0, rise * 0.45, 0));
+      const end = top.clone().addScaledVector(out, reach).add(V(0, rise, 0));
+      b.tube([top, mid, end], [0.0095, 0.0065, 0.003], 5, reg, bark);
+      clumps.push({ c: end.clone().add(V(0, 0.03, 0)), R: 0.12 + r() * 0.04, cards: 9 });
+      // a side branch rises from the limb's middle with its own clump, wider the higher it is
+      const sb = mid.clone().addScaledVector(V(-out.z, 0, out.x), (r() < 0.5 ? 1 : -1) * (0.1 + r() * 0.1)).addScaledVector(out, 0.08).add(V(0, 0.08 + r() * 0.08, 0));
+      b.tube([mid, sb], [0.0055, 0.0025], 4, reg, bark);
+      clumps.push({ c: sb, R: 0.1 + r() * 0.04, cards: 8 });
+    }
+    clumps.push({ c: top.clone().add(V((r() - 0.5) * 0.08, 0.42 + r() * 0.1, (r() - 0.5) * 0.08)), R: 0.12, cards: 8 });
+    const lo = fork, hi = 1;
+    for (const k of clumps) hangClump(b, r, k.c, k.R, k.cards, lo, hi);
+  } else if (kind === 'spread') {
+    const tr = 0.2 + r() * 0.08;
+    const trunk: THREE.Vector3[] = [];
+    const rad: number[] = [];
+    const tw = r() * 6;
+    for (let i = 0; i < 6; i++) {
+      const t = i / 5;
+      trunk.push(V(Math.sin(t * 3 + tw) * 0.03 * t, -0.05 + (tr + 0.05) * t, Math.cos(t * 3 + tw) * 0.03 * t));
+      rad.push(0.026 * (i === 0 ? 1.6 : i === 1 ? 1.2 : 1.0 - 0.15 * t));
+    }
+    b.tube(trunk, rad, 8, reg, bark);
+    const top = trunk[5].clone();
+    const nl = 4 + Math.floor(r() * 2);
+    const a0 = r() * Math.PI * 2;
+    for (let k = 0; k < nl; k++) {
+      const a = a0 + (k / nl) * Math.PI * 2 + (r() - 0.5) * 0.7;
+      const out = V(Math.cos(a), 0, Math.sin(a));
+      const side = V(-out.z, 0, out.x);
+      const wob = (r() < 0.5 ? 1 : -1) * (0.05 + r() * 0.07);
+      const reach = 0.3 + r() * 0.16;
+      const rise = 0.34 + r() * 0.2;
+      // limbs wander: out and up, then a sideways dog-leg, then up again
+      const p1 = top.clone().addScaledVector(out, reach * 0.3).addScaledVector(side, wob * 0.5).add(V(0, rise * 0.25, 0));
+      const p2 = top.clone().addScaledVector(out, reach * 0.62).addScaledVector(side, wob).add(V(0, rise * 0.55, 0));
+      const p3 = top.clone().addScaledVector(out, reach).addScaledVector(side, wob * 0.4).add(V(0, rise, 0));
+      b.tube([top, p1, p2, p3], [0.017, 0.0125, 0.008, 0.0035], 6, reg, bark);
+      clumps.push({ c: p3.clone().add(V(0, 0.04, 0)), R: 0.15, cards: 11 });
+      // a fork off the second knuckle, going the other way
+      const f = p2.clone().addScaledVector(out, 0.1).addScaledVector(side, -wob * 1.3).add(V(0, 0.09 + r() * 0.06, 0));
+      b.tube([p2, f], [0.0075, 0.003], 5, reg, bark);
+      clumps.push({ c: f.clone().add(V(0, 0.03, 0)), R: 0.13, cards: 9 });
+    }
+    clumps.push({ c: top.clone().add(V((r() - 0.5) * 0.1, 0.46, (r() - 0.5) * 0.1)), R: 0.14, cards: 9 });
+    for (const k of clumps) hangClump(b, r, k.c, k.R, k.cards, tr, 0.9, 1.1);
+  } else {
+    const tr = 0.18 + r() * 0.08;
+    const trunk: THREE.Vector3[] = [];
+    const rad: number[] = [];
+    const tw = r() * 6;
+    for (let i = 0; i < 5; i++) {
+      const t = i / 4;
+      trunk.push(V(Math.sin(t * 4 + tw) * 0.05 * t, -0.05 + (tr + 0.05) * t, Math.cos(t * 4 + tw) * 0.05 * t));
+      rad.push(0.021 * (i === 0 ? 1.5 : 1.0 - 0.2 * t));
+    }
+    b.tube(trunk, rad, 7, reg, bark);
+    const top = trunk[4].clone();
+    const nl = 5;
+    const a0 = r() * Math.PI * 2;
+    for (let k = 0; k < nl; k++) {
+      const a = a0 + (k / nl) * Math.PI * 2 + (r() - 0.5) * 0.6;
+      const out = V(Math.cos(a), 0, Math.sin(a));
+      const reach = 0.2 + r() * 0.14;
+      const rise = 0.22 + r() * 0.16;
+      const mid = top.clone().addScaledVector(out, reach * 0.5).add(V(0, rise * 0.5, 0));
+      const end = top.clone().addScaledVector(out, reach).add(V(0, rise, 0));
+      b.tube([top, mid, end], [0.012, 0.008, 0.004], 5, reg, bark);
+      clumps.push({ c: end.clone().add(V(0, 0.05, 0)), R: 0.17, cards: 13 });
+      clumps.push({ c: mid.clone().addScaledVector(out, 0.05).add(V(0, 0.12, 0)), R: 0.16, cards: 11 });
+    }
+    clumps.push({ c: top.clone().add(V(0, 0.38, 0)), R: 0.2, cards: 13 });
+    // a dome: short, dense cards, not hanging ones
+    for (const k of clumps) hangClump(b, r, k.c, k.R, k.cards, tr, 0.85, 0.85);
   }
   return b.build();
 }
+
+/** The tall gum, for callers that only want one eucalypt. */
+export const eucalyptGeometry = (seed = 1) => gumGeometry('tall', seed);
 
 /**
  * Moreton Bay fig, height 1: a short, massive, buttressed trunk, a few limbs spreading wide and low and a very
