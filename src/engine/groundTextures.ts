@@ -149,6 +149,97 @@ function gravel(size: number) {
 }
 
 /**
+ * Vegetated cut bank (Alpine lowland roads), three independent patterns in one tile, read tri-planar by the terrain
+ * shader (2.9 m per repeat): R crumbly earth (soft clods, no pixel speckle), G moss and grass cover (broad blobs),
+ * B fibres and roots (light fine grass-root fibres, a few dark thick roots running every way). Nothing here is
+ * directional on its own, so a bank cannot streak down the slope the way a one-axis texture does.
+ */
+function bank(size: number) {
+  const chan = (draw: (ctx: CanvasRenderingContext2D, r: () => number) => void, seed: number, soft: number, spread = 0) => {
+    const [c, ctx] = canvas(size);
+    draw(ctx, rng(seed));
+    // soften across the wrap (3x3 tiled copy, centre kept): hard 1 px strokes magnify into stair-steps on a bank at arm's length
+    const [t, tctx] = canvas(size);
+    tctx.drawImage(c, 0, 0);
+    ctx.save();
+    ctx.filter = `blur(${soft}px)`;
+    for (let oy = -1; oy <= 1; oy++) for (let ox = -1; ox <= 1; ox++) ctx.drawImage(t, ox * size, oy * size);
+    ctx.restore();
+    const data = ctx.getImageData(0, 0, size, size).data;
+    // layered 50 % noise and the blur leave little contrast: stretch to a fixed spread so the shader can rely on it
+    if (spread > 0) {
+      let sum = 0, sq = 0;
+      for (let i = 0; i < size * size; i++) sum += data[i * 4];
+      const mean = sum / (size * size);
+      for (let i = 0; i < size * size; i++) sq += (data[i * 4] - mean) ** 2;
+      const k = spread / Math.max(Math.sqrt(sq / (size * size)), 1);
+      for (let i = 0; i < size * size; i++) data[i * 4] = Math.max(0, Math.min(255, mean + (data[i * 4] - mean) * k));
+    }
+    return data;
+  };
+  const earth = chan((ctx, r) => {
+    ctx.fillStyle = 'rgb(128,128,128)';
+    ctx.fillRect(0, 0, size, size);
+    blurNoise(ctx, size, r, 6, 70);
+    blurNoise(ctx, size, r, 18, 56);
+    blurNoise(ctx, size, r, 52, 30);
+    // soft clods of crumbly soil, a few pixels across: they blur away in the mips instead of shimmering
+    for (let i = 0; i < 700; i++) {
+      const x = r() * size, y = r() * size, rad = 3 + r() * 8;
+      const v = r() < 0.5 ? 84 + r() * 26 : 150 + r() * 40;
+      wrapped(ctx, size, (ox, oy) => {
+        const g = ctx.createRadialGradient(x + ox, y + oy, 0, x + ox, y + oy, rad);
+        g.addColorStop(0, `rgba(${v},${v},${v},0.5)`);
+        g.addColorStop(1, `rgba(${v},${v},${v},0)`);
+        ctx.fillStyle = g;
+        ctx.fillRect(x + ox - rad, y + oy - rad, rad * 2, rad * 2);
+      }, x, y, 12);
+    }
+  }, 61, 1.2, 44);
+  const moss = chan((ctx, r) => {
+    ctx.fillStyle = 'rgb(100,100,100)';
+    ctx.fillRect(0, 0, size, size);
+    blurNoise(ctx, size, r, 5, 170);
+    blurNoise(ctx, size, r, 14, 120);
+    blurNoise(ctx, size, r, 40, 60);
+  }, 67, 0.5, 52);
+  const fibre = chan((ctx, r) => {
+    ctx.fillStyle = 'rgb(122,122,122)';
+    ctx.fillRect(0, 0, size, size);
+    ctx.lineCap = 'round';
+    const walk = (len: number, turn: number, width: number, v: number, alpha: number) => {
+      let x = r() * size, y = r() * size, a = r() * Math.PI * 2;
+      const pts: [number, number][] = [[x, y]];
+      for (let k = 0; k < len; k++) {
+        a += (r() - 0.5) * turn;
+        x += Math.cos(a) * 5;
+        y += Math.sin(a) * 5;
+        pts.push([x, y]);
+      }
+      ctx.strokeStyle = `rgba(${v},${v},${v},${alpha})`;
+      ctx.lineWidth = width;
+      wrapped(ctx, size, (ox, oy) => {
+        ctx.beginPath();
+        pts.forEach(([px, py], k) => (k ? ctx.lineTo(px + ox, py + oy) : ctx.moveTo(px + ox, py + oy)));
+        ctx.stroke();
+      });
+    };
+    for (let i = 0; i < 320; i++) walk(4 + Math.floor(r() * 10), 1.2, 1.1 + r() * 1.3, 190 + r() * 50, 0.5);
+    for (let i = 0; i < 22; i++) walk(10 + Math.floor(r() * 16), 0.7, 3 + r() * 2.5, 40 + r() * 30, 0.6);
+  }, 71, 1.6);
+  const [c, ctx] = canvas(size);
+  const img = ctx.createImageData(size, size);
+  for (let i = 0; i < size * size; i++) {
+    img.data[i * 4] = earth[i * 4];
+    img.data[i * 4 + 1] = moss[i * 4];
+    img.data[i * 4 + 2] = fibre[i * 4];
+    img.data[i * 4 + 3] = 255;
+  }
+  ctx.putImageData(img, 0, 0);
+  return c;
+}
+
+/**
  * Mown turf seen from the saddle: a fine, low-contrast grain of short blades in every direction (a mown
  * lawn lies flat, it does not stand up in tufts) over soft mottling. One tile is ~2.4 m (terrainMaterial
  * samples it at 0.42/m), so a blade is a few centimetres and the repeat hides under a second, coarser sample.
@@ -200,7 +291,7 @@ float gJoint(vec2 p, vec2 cell, float jw, float pix, out vec2 id) {
 }
 `;
 
-let cache: { grass: THREE.Texture; rock: THREE.Texture; gravel: THREE.Texture; lawn: THREE.Texture } | null = null;
+let cache: { grass: THREE.Texture; rock: THREE.Texture; gravel: THREE.Texture; lawn: THREE.Texture; bank: THREE.Texture } | null = null;
 
 export function groundTextures(anisotropy = 16) {
   if (!cache) {
@@ -209,6 +300,7 @@ export function groundTextures(anisotropy = 16) {
       rock: markShared(toTexture(rock(512), anisotropy)),
       gravel: markShared(toTexture(gravel(512), anisotropy)),
       lawn: markShared(toTexture(lawn(512), anisotropy)),
+      bank: markShared(toTexture(bank(512), anisotropy)),
     };
   }
   return cache;

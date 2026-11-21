@@ -49,6 +49,9 @@ export const terrainUniforms = {
   uCity: { value: 0 },
   uCityKind: { value: 0 },
   uLawnTex: { value: blank as THREE.Texture },
+  /** Vegetated cut banks (biome.banks, Alpine lowland): earth, moss and root detail for steep ground near the road. */
+  uBankTex: { value: blank as THREE.Texture },
+  uBanks: { value: 0 },
   uGrLawn: { value: new THREE.Vector3(0.16, 0.25, 0.07) },
   uGrLeaf: { value: new THREE.Vector3(0.36, 0.17, 0.04) },
   uGrPave: { value: new THREE.Vector3(0.26, 0.255, 0.24) },
@@ -89,6 +92,7 @@ export function setTerrainBiome(b: Biome) {
   terrainUniforms.uStreet.value = b.streets ? 1 : 0;
   const city = !!(b.lawn || b.streets || b.suburb);
   terrainUniforms.uCity.value = city ? 1 : 0;
+  terrainUniforms.uBanks.value = b.banks && !city && b.karst === 0 ? 1 : 0;
   terrainUniforms.uCityKind.value = b.suburb ? 2 : b.streets ? 1 : 0;
   // mown October turf in Central Park, pale cool granite in Vienna, light yellow-green kikuyu and concrete in Sydney
   const gr = b.suburb
@@ -135,6 +139,7 @@ export function terrainMaterial(map: THREE.Texture) {
     terrainUniforms.uRockTex.value = g.rock;
     terrainUniforms.uGravelTex.value = g.gravel;
     terrainUniforms.uLawnTex.value = g.lawn;
+    terrainUniforms.uBankTex.value = g.bank;
   }
   const mat = new THREE.MeshLambertMaterial({ map });
   mat.onBeforeCompile = (shader) => {
@@ -171,6 +176,8 @@ uniform vec3 uMeadowTint;
 uniform float uCity;
 uniform float uCityKind;
 uniform sampler2D uLawnTex;
+uniform sampler2D uBankTex;
+uniform float uBanks;
 uniform vec3 uGrLawn;
 uniform vec3 uGrLeaf;
 uniform vec3 uGrPave;
@@ -205,6 +212,9 @@ float tBump = 0.0;
   vec3 q = vAtmoWorld;
   float camD = length(vAtmoWorld - cameraPosition);
   float near = 1.0 - smoothstep(40.0, 320.0, camD);
+  // Alpine lowland (biome.banks): steep ground beside the road is a vegetated earth bank, not rock; the treeline
+  // (about 1450 to 1900 m) hands the old steep-slope rock treatment back, where real cliffs and screes are
+  float lowland = uBanks * (1.0 - smoothstep(1450.0, 1900.0, vAtmoWorld.y));
 
   // OSM land cover (G meadow, B built-up) keeps mown meadows from reading as gravel
   vec2 lmuv = (vAtmoWorld.xz - uMaskOrigin) / uMaskSize;
@@ -226,8 +236,9 @@ float tBump = 0.0;
   // bright, unsaturated photo pixels are snow only up high: on the Prealps they are mown or dry grass.
   // Pale scree and dry grass on the high passes (Stelvio, Esri) reach L 0.75; snow sits above 0.85
   float wSnow = smoothstep(0.8, 0.9, L) * (1.0 - smoothstep(0.1, 0.22, sat)) * smoothstep(1500.0, 1950.0, vAtmoWorld.y);
-  float steep = smoothstep(0.26, 0.52, slope);
-  float wRock = clamp((1.0 - wGrass) * (1.0 - wSnow) * smoothstep(0.24, 0.1, sat) * smoothstep(0.08, 0.3, slope), 0.0, 1.0);
+  // (slope is 1 - cos: 0.26 is 42 degrees, 0.42 is 55, 0.6 is 66; lowland banks turn to rock only on the steepest faces)
+  float steep = smoothstep(mix(0.26, 0.42, lowland), mix(0.52, 0.6, lowland), slope);
+  float wRock = clamp((1.0 - wGrass) * (1.0 - wSnow) * smoothstep(0.24, 0.1, sat) * smoothstep(mix(0.08, 0.2, lowland), mix(0.3, 0.5, lowland), slope), 0.0, 1.0);
   wRock = max(wRock, steep * (1.0 - wSnow));
   wGrass *= 1.0 - wRock;
   // open ground with any colour is grass (mown meadows photograph pale); only grey, bright,
@@ -270,7 +281,7 @@ float tBump = 0.0;
   rd = mix(rd, rd * rd2, 0.6);
   rd *= 0.7 + 0.6 * (texture2D(uRockTex, q.xz * 0.021 + q.y * 0.01).r);
   // karst pavement is smooth, rounded limestone: much less crackle than Alpine rock
-  rd = 1.0 + (rd - 1.0) * mix(1.0, 0.35, uKarst);
+  rd = 1.0 + (rd - 1.0) * mix(1.0, 0.35, uKarst) * mix(1.0, 0.5, lowland);
   float gv = texture2D(uGravelTex, p * 0.9).r * 2.0;
   float d = 1.0;
   d = mix(d, gd, wGrass);
@@ -278,7 +289,7 @@ float tBump = 0.0;
   d = mix(d, 1.0 + (gv - 1.0) * 0.55, wGravel * 0.7 * (1.0 - 0.85 * uStreet));
   d = mix(d, 0.97 + 0.06 * gv, wSnow);
   tDetail = mix(1.0, d, near);
-  tBump = (d - 1.0) * near * mix(0.6, 2.2, wRock) * mix(1.0, 0.45, uKarst) * mix(1.0, 0.35, uStreet);
+  tBump = (d - 1.0) * near * mix(0.6, mix(2.2, 1.2, lowland), wRock) * mix(1.0, 0.45, uKarst) * mix(1.0, 0.35, uStreet);
 
   // close to the camera the photo blurs and smears at grazing angles: keep its colour, not its texels
   float soft = (1.0 - smoothstep(30.0, 180.0, camD));
@@ -307,6 +318,15 @@ float tBump = 0.0;
   vec3 rockTint = mix(wide, vec3(dot(wide, vec3(0.33))) * vec3(1.03, 1.0, 0.95), 0.5);
   // karst coasts: the blurred photo mixes in the sea; cliffs and cuts are grey limestone
   rockTint = mix(rockTint, vec3(0.5, 0.48, 0.44) * (0.85 + 0.3 * tNoise(q.xz * 0.08 + q.y * 0.05)), uKarst);
+  // lowland faces too steep for plants: layered grey-brown Flysch and marl in beds, mossy stains lower down
+  {
+    float bedY = q.y * 2.3 + tNoise(q.xz * 0.14) * 2.8 + tNoise(q.xz * 0.7) * 0.5;
+    float bedA = smoothstep(0.25, 0.75, 0.5 + 0.5 * sin(bedY * 6.2832));
+    float thinB = 0.5 + 0.5 * sin(bedY * 19.0 + tNoise(q.xz * 0.35) * 3.0);
+    vec3 flysch = mix(vec3(0.2, 0.19, 0.165), vec3(0.34, 0.315, 0.265), bedA) * (0.88 + 0.2 * thinB) * (0.8 + 0.4 * tNoise(q.xz * 0.5 + q.y * 0.8));
+    flysch = mix(flysch, vec3(0.1, 0.13, 0.06), 0.25 * smoothstep(0.55, 0.8, tNoise(q.xz * 0.9 + q.y * 0.12)));
+    rockTint = mix(rockTint, flysch * clamp(dot(wide, vec3(0.33)) / 0.2, 0.8, 1.2), lowland * 0.85);
+  }
   base = mix(base, rockTint, steep);
   // limestone weathers warm grey with ochre stains (fresh cuts are orange-ochre)
   float ochre = smoothstep(0.45, 0.8, tNoise(q.xz * 0.05 + q.y * 0.03)) * uRockOchre;
@@ -328,11 +348,47 @@ float tBump = 0.0;
   // again; lift near-black photo shadows towards a floor, keeping their hue
   {
     float dl = dot(base, vec3(0.3, 0.55, 0.15));
-    float lifted = sqrt(dl * dl + 0.085 * 0.085);
+    float lifted = sqrt(dl * dl + mix(0.085, 0.105, lowland) * mix(0.085, 0.105, lowland));
     // photo shadows are blue (skylight only): lift them towards a vegetation hue, not their own
     vec3 vegHue = mix(mix(vec3(0.82, 1.0, 0.68), vec3(1.0, 0.98, 0.8), uKarst), vec3(0.98, 0.97, 0.94), uStreet * (1.0 - wGrass));
     float darkW = smoothstep(0.12, 0.02, dl);
     base = mix(base * (lifted / max(dl, 1e-3)), vegHue * lifted, darkW * 0.8);
+  }
+  // vegetated cut banks: grass, moss, crumbling soil and roots that follow the face (tri-planar, no streaks);
+  // under the crowns the bank is forest floor, litter and roots
+  float bankW = lowland * smoothstep(0.1, 0.18, slope) * (1.0 - steep) * (1.0 - wSnow) * (1.0 - scree) * (1.0 - smoothstep(90.0, 320.0, camD));
+  if (bankW > 0.001) {
+    vec3 bq = pow(abs(wn), vec3(3.0));
+    bq /= (bq.x + bq.y + bq.z);
+    vec3 bt = texture2D(uBankTex, q.zy * 0.34).rgb * bq.x + texture2D(uBankTex, q.xz * 0.34).rgb * bq.y + texture2D(uBankTex, q.xy * 0.34).rgb * bq.z;
+    // the same tile at 0.55 m per repeat: the grain you see from the saddle
+    vec3 bf = texture2D(uBankTex, q.zy * 1.9 + 0.37).rgb * bq.x + texture2D(uBankTex, q.xz * 1.9 + 0.37).rgb * bq.y + texture2D(uBankTex, q.xy * 1.9 + 0.37).rgb * bq.z;
+    float lowN = tNoise(q.xz * 0.09 + q.y * 0.06);
+    float midN = tNoise(q.xz * 0.45 + q.y * 0.3 + 3.0);
+    float bsteep = smoothstep(0.16, 0.46, slope);
+    // bare soil where it is steep, and in patches where the cover broke
+    float bare = smoothstep(0.52, 0.8, lowN * 0.55 + midN * 0.25 + (bt.r - 0.5) * 0.5 + bsteep * 0.25 - 0.17);
+    float mossW = smoothstep(0.42, 0.7, bt.g);
+    float bLum = clamp(dot(base, vec3(0.3, 0.55, 0.15)) / 0.16, 0.65, 1.35);
+    vec3 veg = mix(mix(vec3(0.13, 0.185, 0.06), vec3(0.21, 0.235, 0.09), midN), vec3(0.065, 0.125, 0.045), mossW * 0.8) * bLum * (0.82 + 0.36 * bt.r);
+    veg *= 0.88 + 0.3 * smoothstep(0.55, 0.85, bt.b);
+    // fine tufts and clumps, broad tone patches, and dry straw where the grass has cured
+    veg *= (0.76 + 0.48 * bf.r) * (0.9 + 0.2 * smoothstep(0.5, 0.85, bf.b)) * (0.82 + 0.36 * tNoise(q.xz * 0.23 + q.y * 0.15));
+    veg = mix(veg, vec3(0.2, 0.18, 0.09) * bLum, smoothstep(0.58, 0.8, tNoise(q.xz * 0.17 + q.y * 0.1 + 9.0)) * 0.55);
+    vec3 soil = mix(vec3(0.1, 0.072, 0.047), vec3(0.19, 0.14, 0.09), bt.r) * (0.85 + 0.3 * midN);
+    soil = mix(soil, vec3(0.2, 0.185, 0.155) * (0.8 + 0.4 * bt.r), smoothstep(0.3, 0.5, slope) * smoothstep(0.5, 0.8, lowN) * 0.6);
+    vec3 bcol = mix(veg, soil, bare);
+    vec3 litter = mix(vec3(0.2, 0.135, 0.075), vec3(0.28, 0.2, 0.11), bt.r) * (0.7 + 0.5 * midN);
+    bcol = mix(bcol, litter, canopy * 0.6 * (1.0 - mossW * 0.4));
+    bcol = mix(bcol, vec3(0.085, 0.062, 0.04), (1.0 - smoothstep(0.2, 0.4, bt.b)) * mix(0.0, 0.5, canopy));
+    base = mix(base, bcol, bankW * 0.92);
+    tDetail = mix(tDetail, 1.0, bankW);
+    tBump = mix(tBump, ((bt.r - 0.5) * 0.4 + (bf.r - 0.5) * 0.35) * (1.0 - smoothstep(30.0, 120.0, camD)), bankW);
+  }
+  // shaded lowland ground never goes black-green: dark photo shadow under the crowns is lifted to a warm forest floor
+  {
+    float fl = dot(base, vec3(0.3, 0.55, 0.15));
+    base = mix(base, vec3(0.105, 0.1, 0.055) * (0.8 + 0.4 * tNoise(p * 0.6)), lowland * smoothstep(0.085, 0.04, fl) * 0.8);
   }
   // rock faces and cuts near the road: photographed fractured limestone, ochre to grey
   float cliffNear = 1.0 - smoothstep(35.0, 110.0, camD);
@@ -367,7 +423,20 @@ float tBump = 0.0;
   // unsaturated photo pixels in the road corridor become verge (grass in the Alps)
   float photoRoad = verge * smoothstep(0.14, 0.06, sat) * (1.0 - uKarst) * (1.0 - steep) * (1.0 - uStreet);
   vec3 vergeGrass = vec3(0.13, 0.18, 0.08) * (0.85 + 0.3 * tNoise(p * 0.8)) * (0.9 + 0.2 * gd);
+  // Alpine lowland: the verge carries the bank's own clumps and straw so it does not read as a flat painted strip
+  if (lowland > 0.001) {
+    float vb = texture2D(uBankTex, p * 0.34).r;
+    float vf = texture2D(uBankTex, p * 1.9 + 0.37).r;
+    vergeGrass *= mix(1.0, (0.78 + 0.44 * vb) * (0.84 + 0.32 * vf), lowland);
+    vergeGrass = mix(vergeGrass, vec3(0.2, 0.18, 0.09), lowland * smoothstep(0.6, 0.8, tNoise(p * 0.3 + 4.0)) * 0.4);
+  }
   base = mix(base, vergeGrass, photoRoad * 0.9);
+  // a patchy gravel seam where the asphalt meets the ground (verge corridor, any slope): grit washed out of the road, not a ditch line
+  {
+    float gv2 = texture2D(uGravelTex, p * 1.1).r * 2.0;
+    float seam = lowland * smoothstep(0.55, 0.9, canTex.g) * smoothstep(0.58, 0.78, tNoise(p * 0.8) * 0.6 + tNoise(p * 3.1) * 0.4) * (1.0 - canopy * 0.5);
+    base = mix(base, vec3(0.25, 0.23, 0.19) * (0.7 + 0.3 * gv2), seam * 0.4);
+  }
   // road verges: grey-brown dirt with pale rubble (not the orthophoto's grey asphalt)
   float rubble = smoothstep(0.72, 0.8, tNoise(p * 2.3)) * 0.5 + smoothstep(0.78, 0.86, tNoise(p * 6.1 + 3.0)) * 0.5;
   vec3 dirt = mix(vec3(0.34, 0.29, 0.24), vec3(0.46, 0.44, 0.39), rubble * 0.6) * (0.82 + 0.3 * tNoise(p * 0.9));
@@ -509,9 +578,9 @@ float tBump = 0.0;
   vec3 bn = normalize(vTWNormal);
   // skylight on grass in shade: the photo's own shadows are already blue, and the blue sky fill on
   // top turned shaded meadow teal (blue above green); shade should be a darker ground colour
-  reflectedLight.indirectDiffuse *= vec3(1.04, 1.0, 0.8);
+  reflectedLight.indirectDiffuse *= mix(vec3(1.04, 1.0, 0.8), vec3(1.1, 1.0, 0.7), uBanks);
   // city grass in shade stays a darker version of its own green, never black-green
-  reflectedLight.indirectDiffuse += diffuseColor.rgb * uCity * 0.1 * vec3(0.95, 1.0, 0.85);
+  reflectedLight.indirectDiffuse += diffuseColor.rgb * (uCity * 0.1 + uBanks * 0.17) * vec3(0.95, 1.0, 0.85);
   float away = (1.0 - smoothstep(-0.15, 0.25, dot(bn, uSunDir))) * smoothstep(0.0, 0.2, uSunDir.y);
   reflectedLight.indirectDiffuse += diffuseColor.rgb * uSunColor * vec3(0.92, 1.0, 0.84) * (0.16 * away);
 }`,

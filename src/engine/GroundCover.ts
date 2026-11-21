@@ -161,6 +161,25 @@ function rockGeometry(): THREE.BufferGeometry {
   return g.translate(0, 0.12, 0);
 }
 
+/**
+ * A weathered, rounded field stone (flysch, marl, glacial erratic): smooth lumps, no facets. Half a metre across,
+ * flatter than tall, so a quarter buried in a bank reads as a stone that has been there for years.
+ */
+function stoneGeometry(): THREE.BufferGeometry {
+  let g: THREE.BufferGeometry = new THREE.IcosahedronGeometry(0.5, 3);
+  g.deleteAttribute('normal');
+  g.deleteAttribute('uv');
+  g = mergeVertices(g, 1e-4);
+  const p = g.getAttribute('position');
+  for (let i = 0; i < p.count; i++) {
+    const x = p.getX(i), y = p.getY(i), z = p.getZ(i);
+    const n = 1 + 0.14 * Math.sin(x * 6 + 1.3) * Math.cos(z * 5 + 0.4) + 0.1 * Math.sin(y * 8 + x * 4 + 2);
+    p.setXYZ(i, x * n * 1.12, y * n * 0.62, z * n);
+  }
+  g.computeVertexNormals();
+  return g;
+}
+
 interface Chunk {
   index: number;
   meshes: THREE.InstancedMesh[];
@@ -199,6 +218,10 @@ export class GroundCover extends THREE.Group {
   private shrub: THREE.BufferGeometry | null = null;
   private shrubMat: THREE.Material | null = null;
   private rock = rockGeometry();
+  private stone = stoneGeometry();
+  private stoneMat: THREE.Material;
+  /** Vegetated Alpine cut banks (biome.banks): saplings, ferns, hanging grass and field stones on steep ground. */
+  private bankLife: boolean;
   private fern: THREE.BufferGeometry | null = null;
   private fernMat: THREE.Material | null = null;
   private palm: THREE.BufferGeometry | null = null;
@@ -214,6 +237,10 @@ export class GroundCover extends THREE.Group {
     super();
     this.o = { density: 1, ...o };
     this.biome = o.biome ?? ALPINE;
+    const B0 = this.biome;
+    this.bankLife = !!B0.banks && !B0.lawn && !B0.streets && !B0.suburb && !B0.karst;
+    // weathered grey-brown field stones for the banks (the scanned boulders are faceted and pale)
+    this.stoneMat = patchMaterial(new THREE.MeshStandardMaterial({ color: new THREE.Color(0.3, 0.29, 0.255), roughness: 1 }), { key: 'bankstone' });
     // photographic grass cards from the shared foliage atlas (scripts/bake-foliage.py)
     const grass = new THREE.MeshLambertMaterial({ map: treeAtlas(this.biome.atlas), alphaTest: 0.5, side: THREE.DoubleSide });
     // the cards light like the turf under them: each tuft carries the ground normal (gNormal), and
@@ -234,7 +261,7 @@ export class GroundCover extends THREE.Group {
     this.grassMat = preserveCoverage(patchMaterial(grass, { key: 'tuft3', wind: true }));
     this.grassMat.alphaToCoverage = true;
     this.flowerMat = this.grassMat;
-    if (this.biome.shrubs > 0) {
+    if (this.biome.shrubs > 0 || this.bankLife) {
       // mastic / lentisk / young holm oak: a round leafy bush (tree model, leaf clusters to the ground)
       this.shrub = broadleafGeometry(11, 0.0, 1.35);
       const sm = preserveCoverage(
@@ -412,6 +439,7 @@ export class GroundCover extends THREE.Group {
     const ferns: number[] = [];
     const palms: number[] = [];
     const cushions: number[] = [];
+    const stones: number[] = [];
     const B = this.biome;
     const i0 = Math.floor((ci * CHUNK) / route.step);
     const i1 = Math.min(route.n - 1, Math.floor(((ci + 1) * CHUNK) / route.step));
@@ -491,6 +519,28 @@ export class GroundCover extends THREE.Group {
           const sz = groundHeight(x, z + 1.5) - y;
           const slope = Math.hypot(sx, sz) / 1.5;
           const alpine = Math.min(1, Math.max(0, (y - 1900) / 900));
+          if (this.bankLife && y < 1700) {
+            // cut banks and embankments: plants and small embedded stones up to ~60 degrees, only the steepest faces
+            // are bare; cover gathers at the foot and along the top edge where the ground flattens
+            if (slope > 1.73) {
+              if (r() < (d < halfWidth + 3.5 ? 0.025 : 0.004)) stones.push(x, y - 0.1, z, 0.25 + r() * 0.5, r() * 6.28, 0);
+              continue;
+            }
+            if (slope > 0.45) {
+              const gl = Math.hypot(sx, sz) || 1;
+              const ux = sx / gl, uz = sz / gl;
+              const up = (groundHeight(x + ux * 3, z + uz * 3) - y) / 3;
+              const dn = (y - groundHeight(x - ux * 3, z - uz * 3)) / 3;
+              const edge = Number.isFinite(up) && Number.isFinite(dn) && (up < 0.4 || dn < 0.4);
+              if (r() < 0.012 * (d < halfWidth + 3.5 ? 3 : 1)) stones.push(x, y - 0.1, z, 0.15 + r() * r() * 0.55, r() * 6.28, 0);
+              if (r() > (edge ? 0.8 : 0.34)) continue;
+              const pick = r();
+              if (pick < 0.04 && this.shrub && d > halfWidth + 1.2) cushions.push(x, y - 0.12, z, 0.5 + r() * 0.7, r() * 6.28, 0);
+              else if (pick < 0.1 && this.fern) ferns.push(x, y - 0.05, z, 0.4 + r() * 0.5, r() * 6.28, 0);
+              else grass.push(x, y - 0.05, z, (edge ? 0.5 : 0.4) + r() * 0.45, r() * 6.28, -1);
+              continue;
+            }
+          }
           if (slope > 0.75 || (slope > 0.45 && r() < 0.6)) {
             if (r() < 0.03 * (B.steepRocks ?? B.rockDensity)) rocks.push(x, y - 0.15, z, 0.4 + r() * (B.tussocks ? 0.6 : 1.3), r() * 6.28, 0);
             continue;
@@ -573,7 +623,9 @@ export class GroundCover extends THREE.Group {
       const mesh = new THREE.InstancedMesh(geo, mat, n);
       if (turf) mesh.userData.ownGeometry = true;
       for (let k = 0; k < n; k++) {
-        const [x, y, z, sc, rot, alpine] = arr.slice(k * 6, k * 6 + 6);
+        const [x, y, z, sc, rot, flag] = arr.slice(k * 6, k * 6 + 6);
+        // flag -1: a bank tuft, a shade darker than the meadow tufts it grows among
+        const alpine = Math.max(flag, 0);
         q.setFromAxisAngle(up, rot);
         if (turf && cityLawn) {
           // no two clumps alike: width, height and lean vary, some are mirrored; a stamped row of one tuft reads as fake
@@ -587,7 +639,7 @@ export class GroundCover extends THREE.Group {
           mesh.setColorAt(k, col.copy(this.biome.shrubTint).multiplyScalar(0.8 + 0.3 * ((rot * 7.3) % 1)));
         } else if (tint) {
           const v = (Math.sin(x * 0.21 + z * 0.13) + Math.sin(z * 0.17 - x * 0.05)) * 0.25 + 0.5;
-          col.copy(lush).lerp(dry, v * 0.6).lerp(pale, alpine * 0.7).multiplyScalar(0.82 + 0.18 * ((rot * 13.7) % 1));
+          col.copy(lush).lerp(dry, v * 0.6).lerp(pale, alpine * 0.7).multiplyScalar((0.82 + 0.18 * ((rot * 13.7) % 1)) * (flag < 0 ? 0.74 : 1));
           // park and street lawns: the rough tufts range from dark green to bleached straw
           if (cityLawn) col.lerp(dry, ((rot * 3.3) % 1) * 0.8).multiplyScalar(0.7 + 0.45 * ((rot * 17.1) % 1));
           mesh.setColorAt(k, col);
@@ -605,6 +657,7 @@ export class GroundCover extends THREE.Group {
     if (this.palm && this.palmMats) add(this.palm, this.palmMats as unknown as THREE.Material, palms, 1, true, false);
     add(this.flowerTuft, this.flowerMat, flowers, 1.0, false, true, true);
     add(this.rock, this.rockMat, rocks, 1, true, false);
+    add(this.stone, this.stoneMat, stones, 1, true, false);
     if (this.fern && this.fernMat) add(this.fern, this.fernMat, ferns, 1, false, false);
     this.chunks.set(ci, { index: ci, meshes, paths: this.buildPaths(ci) });
   }
@@ -731,6 +784,8 @@ export class GroundCover extends THREE.Group {
     this.shrub?.dispose();
     this.shrubMat?.dispose();
     this.rock.dispose();
+    this.stone.dispose();
+    this.stoneMat.dispose();
     this.grassMat.dispose();
     if (!this.sharedRockMat) this.rockMat.dispose();
     this.palm?.dispose();

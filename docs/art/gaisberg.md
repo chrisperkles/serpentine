@@ -139,7 +139,9 @@ and the bus, cows at the Gersbergalm (H1).
 Terrain pass 2026-11-21 (branch `r4-terrain`): the ground along the road is built from BEV 1 m lidar (zoom 16 within
 400 m of the road, zoom 17 within 90 m; `research/gaisberg/geodata.md` section 1a), so the road cuts, fills, banks
 and hollows are the real ones and the guard rails now stand where the real road drops off. The route's profile is
-the lidar along the line (same smoothing as before). Open: the steep cut banks are bare (ground cover skips slopes
-over about 37 degrees) and take the terrain shader's steep-slope rock treatment, which reads dark and speckled;
-the lidar and the 10 m global tiles differ by 0.3 to 1 m where the baked area ends (skirts hide it, no crack seen).
+the lidar along the line (same smoothing as before). Cut banks pass 2026-11-21 (branch `r4-banks`): steep ground is now a vegetated earth bank (tri-planar earth, moss,
+roots, straw; forest floor under the canopy), rock only beyond ~55 degrees as layered grey-brown beds, ground cover
+and rounded field stones up to 60 degrees, lifted shade, a patchy gravel seam on the verge. Open: no real ditch at the
+foot of banks, saplings read as mossy blobs, no wire mesh or retaining walls on the freshest cuts, banks repeat their
+tuft pattern; the lidar and the 10 m global tiles differ by 0.3 to 1 m where the baked area ends (skirts hide it, no crack seen).
 
