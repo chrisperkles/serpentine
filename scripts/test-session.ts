@@ -139,4 +139,48 @@ await t('nobody is towed who does not pedal', () => {
   assert.ok(a.state.distance < 1);
 });
 
+await t('a trainer drop-out pauses the ride and leaves no zeros in it; it carries on when power is back', () => {
+  const metrics: { power?: number; cadence?: number } = { power: 250, cadence: 88 };
+  const modes: { kind: string }[] = [];
+  const hub = { metrics, setMode: (m: { kind: string }) => modes.push(m), setGearRatio: () => undefined, setRiderWeights: () => undefined } as unknown as DeviceHub;
+  const session = new RideSession({ route, workout: null, settings: { ...settings }, ghost: null, erg: false, holdWatts: null, gears: false }, hub);
+  session.begin();
+  const run = (sec: number) => {
+    for (let i = 0; i < sec * 20; i++) session.tick(0.05);
+  };
+  run(60);
+  // a hiccup: the last watts carry on, nothing pauses
+  delete metrics.power;
+  run(2);
+  assert.equal(session.state.status, 'riding');
+  assert.equal(session.state.power, 250);
+  // gone for good: paused after 3 s, the trainer told to let go
+  run(20);
+  assert.equal(session.state.status, 'paused');
+  assert.ok(session.state.dropout !== null && session.state.dropout > 20, `dropout ${session.state.dropout}`);
+  assert.equal(modes.at(-1)!.kind, 'idle');
+  const elapsed = session.state.elapsed;
+  // back
+  metrics.power = 250;
+  run(1);
+  assert.equal(session.state.status, 'riding');
+  assert.equal(session.state.dropout, null);
+  assert.equal(session.state.banner?.text, 'Power is back');
+  run(10);
+  const rec = session.record();
+  // 60 s, 3 s on held watts, 11 s after: all of it at 250 W, the 20 s without data are not in the ride
+  assert.ok(Math.abs(session.state.elapsed - elapsed - 11) < 0.2, `elapsed ${session.state.elapsed - elapsed}`);
+  assert.ok(rec.samples.length >= 71 && rec.samples.length <= 74, `samples ${rec.samples.length}`);
+  assert.ok(rec.samples.every((x) => x.power === 250), 'a zero crept in');
+});
+
+await t('a ride without any power source is not a drop-out', () => {
+  const hub = { metrics: {}, setMode: () => undefined, setGearRatio: () => undefined, setRiderWeights: () => undefined } as unknown as DeviceHub;
+  const session = new RideSession({ route, workout: null, settings: { ...settings }, ghost: null, erg: false, holdWatts: null, gears: false }, hub);
+  session.begin();
+  for (let i = 0; i < 200; i++) session.tick(0.05);
+  assert.equal(session.state.status, 'riding');
+  assert.equal(session.state.dropout, null);
+});
+
 console.log(`${n} session tests passed`);

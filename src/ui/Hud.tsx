@@ -234,6 +234,9 @@ export function Hud({
   const ws = st.workout;
   const message = ws?.message;
   const noTrainer = !controllable && !devices.some((d) => d.capabilities.includes('power'));
+  // the power source the hub is getting back
+  const lost = devices.filter((d) => d.state !== 'connected');
+  const lostDevice = (lost.find((d) => d.capabilities.includes('control')) ?? lost.find((d) => d.capabilities.includes('power')))?.name ?? null;
 
   if (hidden) return <div className="hud-hidden-hint">H shows the HUD</div>;
 
@@ -474,7 +477,17 @@ export function Hud({
           {noTrainer && <p className="warn">No trainer connected. Go back and connect one, or turn on the keyboard simulator.</p>}
         </div>
       )}
-      {st.status === 'paused' && (
+      {st.status === 'paused' && st.dropout !== null && (
+        <div className="overlay dropout" role="alert">
+          <p className="o-main">{lostDevice ? `${lostDevice} lost` : 'No power data'}</p>
+          <p className="o-sub">
+            {lostDevice ? 'Reconnecting' : 'Waiting for the trainer or power meter'} for {Math.round(st.dropout)} s. The ride is paused and
+            carries on by itself when it is back; the gap won't count in your ride.
+          </p>
+          <p className="o-sub small-sub">Keep pedalling gently to wake the trainer. Space rides on without it, Esc ends the ride.</p>
+        </div>
+      )}
+      {st.status === 'paused' && st.dropout === null && (
         <div className="overlay">
           <p className="o-main">Paused</p>
           <p className="o-sub">Space to continue</p>

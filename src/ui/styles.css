@@ -4127,3 +4127,13 @@ a.btn {
   font-size: 14px;
   color: var(--label, #c4d0d5);
 }
+
+.overlay.dropout {
+  background: rgba(13, 27, 36, 0.62);
+  text-align: center;
+  padding: 0 10vw;
+}
+
+.overlay.dropout .o-main {
+  color: var(--g2);
+}

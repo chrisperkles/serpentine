@@ -157,6 +157,11 @@ export interface LiveState {
    * trainer still feels the road; only where you are on it follows the group.
    */
   groupPull: number;
+  /**
+   * The power source went quiet mid-ride (trainer or power meter lost, reconnecting): seconds so far. Past
+   * DROPOUT_PAUSE_S the ride pauses by itself and carries on when power is back, so the gap is not in the ride.
+   */
+  dropout: number | null;
   drafting: boolean;
   /** Estimated FTP once a ramp test ends. */
   rampFtp: number | null;
@@ -187,6 +192,11 @@ const VAM_WINDOW = 30;
 const LEAD_IN_MAX_GRADE = 2;
 /** Metres before the climb over which the lead-in gradient blends into the real one. */
 const LEAD_IN_BLEND = 200;
+/**
+ * Seconds without power data before the ride pauses itself. Until then the last watts carry on: a Bluetooth hiccup
+ * shouldn't brake the rider or put zeros into the ride (the hub already calls data older than 3 s gone).
+ */
+export const DROPOUT_PAUSE_S = 3;
 
 export class RideSession {
   readonly route: Route;
@@ -218,6 +228,11 @@ export class RideSession {
   private progressOffset = 0;
   /** Group ride with keep-together on. */
   private together = false;
+  /** Power came in at least once: from then on its absence is a drop-out, not a ride without a power source. */
+  private hadPower = false;
+  private lastPower = 0;
+  private lostFor = 0;
+  private dropoutEmit = 0;
   readonly drivetrain: Drivetrain;
   /** Virtual gears of the selected drivetrain, easiest first. */
   readonly gears: Gear[];
@@ -251,6 +266,7 @@ export class RideSession {
       bots: (cfg.bots ?? []).map((wkg) => ({ wkg, s: 0, dir: 1, speed: 0, distance: 0, gap: 0 })),
       riders: [],
       groupPull: 0,
+      dropout: null,
       drafting: false,
       rampFtp: null,
     };
@@ -460,6 +476,11 @@ export class RideSession {
   }
 
   togglePause() {
+    // Space during a drop-out: carry on by hand (it pauses again while the data stays away)
+    if (this.st.dropout !== null) {
+      this.st.dropout = null;
+      this.lostFor = 0;
+    }
     if (this.st.status === 'riding') {
       this.st.status = 'paused';
       this.hub.setMode({ kind: 'idle' });
@@ -499,9 +520,12 @@ export class RideSession {
     const st = this.st;
     // the others ride on while we wait at the start or pause
     this.updateRiders();
-    if (st.status !== 'riding') return;
     const m = this.hub.metrics;
-    const power = m.power ?? 0;
+    this.watchDropout(m.power, dt);
+    if (st.status !== 'riding') return;
+    // a short gap in the data keeps the last watts (watchDropout pauses the ride if it lasts)
+    const power = m.power ?? (this.hadPower ? this.lastPower : 0);
+    if (m.power !== undefined) this.lastPower = m.power;
     const cadence = m.cadence ?? 0;
     st.power = power;
     st.cadence = cadence;
@@ -626,6 +650,50 @@ export class RideSession {
     this.emitAcc += dt;
     if (this.emitAcc >= 0.1) {
       this.emitAcc = 0;
+      this.emit();
+    }
+  }
+
+  /**
+   * Power data stopped (the trainer or power meter dropped and the hub is reconnecting): after DROPOUT_PAUSE_S the
+   * ride pauses itself, so the minutes without data are not ridden at 0 W into NP, TSS and the average; when data
+   * comes back it carries on. A rider who paused by hand stays paused.
+   */
+  private watchDropout(power: number | undefined, dt: number) {
+    const st = this.st;
+    if (power !== undefined) {
+      this.hadPower = true;
+      if (this.lostFor > 0) {
+        const lost = this.lostFor;
+        this.lostFor = 0;
+        if (st.dropout !== null) {
+          st.dropout = null;
+          if (st.status === 'paused') {
+            st.status = 'riding';
+            this.banner('Power is back', `after ${Math.round(lost)} s; the gap is not in your ride`, 4);
+          }
+          this.emit();
+        }
+      }
+      return;
+    }
+    if (!this.hadPower || (st.status !== 'riding' && st.dropout === null)) return;
+    this.lostFor += dt;
+    if (st.dropout === null && this.lostFor < DROPOUT_PAUSE_S) return;
+    if (st.status === 'riding') {
+      st.status = 'paused';
+      st.speed = 0;
+      st.power = 0;
+      st.power3s = 0;
+      st.cadence = 0;
+      this.hub.setMode({ kind: 'idle' });
+      st.trainerMode = 'idle';
+    }
+    st.dropout = this.lostFor;
+    // the counter on screen: once a second is enough
+    this.dropoutEmit += dt;
+    if (this.dropoutEmit >= 1 || st.dropout - dt < DROPOUT_PAUSE_S) {
+      this.dropoutEmit = 0;
       this.emit();
     }
   }

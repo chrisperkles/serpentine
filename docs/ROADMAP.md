@@ -25,8 +25,9 @@ with no order yet live in [BACKLOG.md](BACKLOG.md).
 
 ## 1.1: rides you can trust
 
-- A trainer drop-out mid-ride: a banner on the HUD, and the gap kept out of NP/TSS instead of being counted
-  as minutes at 0 W (`devices/index.ts` `onDisconnected`, `sim/session.ts`).
+- [x] A trainer drop-out mid-ride: the last watts carry a gap of up to 3 s; longer, the ride pauses itself with
+  "KICKR … lost, reconnecting for n s" and carries on when power is back, so the gap is not ridden at 0 W into
+  NP, TSS and the average (`session.ts` `watchDropout`, the HUD's drop-out overlay; tests in `test-session.ts`).
 - [x] Ride time from the clock, not from drawn frames: below 10 fps the ride ran in slow motion (`Engine.ts`
   clamped a frame to 0.1 s), and a hidden Chrome tab stopped it. Needed for multiplayer and the island, too.
 - [x] Free everything a ride built when it ends: props, life, tunnels, landmarks, textures and pacer name tags

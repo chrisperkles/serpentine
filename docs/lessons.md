@@ -259,6 +259,12 @@ symptom (what it looked like), cause, fix and where. Newest at the bottom of eac
   where they were (tau 0.5 s), which trails a moving target by speed × tau. Fix: draw them where dead reckoning puts
   them now (last position + speed × (time since + half a round trip)) and ease only the correction a new position
   makes. `scripts/e2e-group.mjs` checks both views against the real gap. Where: `src/net/group.ts` `reckon`, `tick`.
+- **A trainer that dropped mid-ride counted as minutes at 0 W.** The hub clears a lost device's values (and calls any
+  value older than 3 s gone), so the session read `power ?? 0`: the rider coasted to a stop and the zeros went into
+  NP, TSS and the average. Fix: missing power after power was seen is a drop-out; up to 3 s the last watts carry on,
+  then the ride pauses itself (the trainer told to let go) with an overlay naming the device the hub is getting back,
+  and rides on when data returns ("Power is back after n s"). A ride that never had power (keyboard, no trainer) is not
+  a drop-out. Where: `session.ts` `watchDropout`, `Hud.tsx`, `scripts/test-session.ts`.
 - **Keep-together held 300 W and 180 W 24 m apart, out of the draft.** A pull of 0.12 m/s per metre beyond 3 m
   balances a 1.9 m/s speed difference only far apart (2 × (3 + 1.9 / 0.24) m). Fix: 0.6 m/s per metre beyond 1.5 m
   (about 6 m apart, closing in about 1.7 s, still slow against positions half a second old). Where: `session.ts`
