@@ -480,3 +480,51 @@ symptom (what it looked like), cause, fix and where. Newest at the bottom of eac
 - **A custom camera is the way to look at a facade.** The `chase`, `side` and `drone` cams look along the road, so the
   buildings are a strip at the edge. `engine.cameraOverride` replaces the camera each frame: a capture script that sets
   it from route-relative offsets (along, right, up) reviews roof lines and skylines properly.
+
+- **The same red pushchair was the nearest person in four of seven Central Park stills.** Everyone in the pool was put
+  at a fixed distance ahead of the rider (`25 + r^1.8 * 665`) from a fixed random stream, so every start, whatever the
+  position, dealt the same tableau. Worse, `Life.update` runs while the world is still being built: the first-frame
+  placement ran on an empty pool and every group stayed at distance 0. Fix: a start or a jump (`jumped`, a move of
+  more than 120 m between frames) reseeds the random stream from a hash of the rider's position (30 m buckets: a spot
+  repeats, spots differ) and `deal()` shuffles the groups and spreads them evenly over the view ahead (denser near
+  the rider). City routes hold the update (`pending`) until the crowd exists. The "red-and-white upright on the
+  carriageway" in `r3-6400-drone-noon` was that pushchair and its parent in a red top, not scenery. Where: `Life.ts`
+  `reseed`, `deal`, `jog`, `pending`.
+- **Pedestrians on footways were spread over the whole route, not around the rider.** 46 walkers on a 9.8 km loop
+  (90 on the Ring's 5.9 km) left "one to three people" in view. They are pooled now: a walker out of sight or new is put
+  on a footway within 420 m of the rider (`relocate`). Where: `Life.ts`.
+- **"One figure in 40 outfits."** The model is one mesh and the look pool only recoloured it. `PersonKit` now cuts
+  `person-stand.glb` apart at the shoulders (body triangles with a vertex on the torso's 1.03 or 1.47 m rings are
+  torso, the rest arm), elbows (1.17 m) and knees (0.49 m), and dresses it from 160 looks in four kinds (runner,
+  park walker, city, beach): height and build factors, nine skin tones, hair colours, seven hair or hat shapes, sleeves
+  cut with `splitY` (clean at any height, so shorts and short sleeves end in a line), shorts, tights, skirts, coats and
+  dresses, shoes. Geometry is built once per look and shared. Runners have bent elbows and fold their knees (seven
+  draw calls), walkers five, anyone standing or sitting is one baked mesh. Beyond 100 m a mover swaps to a one-piece
+  stand-in (calls on Central Park fell from 2,500 to 1,900). Where: `People.ts`.
+- **Groups chatting faced away from each other.** The park and street crowds turned each figure with
+  `atan2(-cos a, -sin a)`; the figures face -Z, so the right turn towards the middle is `atan2(cos a, sin a)` (the
+  Sydney code had it right). One `crowd()` helper now. Where: `Life.ts`.
+- **Vienna had no cars.** The traffic pool was the mountain-road one: a car every 20 to 65 s from 650 m ahead.
+  Vienna now builds its own set (nine hatchbacks in white, silver, black and grey, two cream taxis with roof signs,
+  three vans with Austrian Post yellow, a red Wiener Linien bus, two scooters), seeds oncoming and receding traffic
+  at load and after a jump (Sydney's `seedTraffic`, with a lane of 2.0 m for the 8.4 m carriageway), spawns a car
+  every 2.5 to 6.5 s, parks 18 cars at kerb spaces where the ground is flat and clear of trunks (`osm.trees`), lamps,
+  benches, tram track and side-street mouths, queues people on the mapped tram platforms (OSM `highway=platform`,
+  turned to the nearest track) and rides cyclists along the mapped `highway=cycleway` lines. Where: `Life.ts`
+  `buildStreet`, `streetSpots`, `tramStops`, `cycleTracks`, `pathRide`.
+- **Kerb cars face the traffic of their side.** `kerb()` hard-coded left-hand traffic; it uses `keep` now, so Vienna's
+  parked cars point the right way.
+- **The "timber-rail fence" at Bondi was a row of benches.** OSM maps a bench node every few metres on the promenade
+  (69 within 100 m of `r5-181`); `Props` placed them all, facing the road, and they read as a split-rail fence.
+  Suburb routes keep one bench per 12 m. Where: `Props.ts` `build`.
+- **Bondi Pavilion read as a motel.** It was a cream box with a flat dark strip where the arcade should be. It is now two
+  storeys: a ground-floor arcade of white round arches (half discs over dark openings) under an entablature, windows in
+  white frames above a string course, a taller centre block with pilasters, and hipped terracotta roofs that overhang
+  the walls by two metres. Where: `Props.ts` `sydneyLandmarks`.
+- **Central Park's boathouse, Dairy and sheds were flat grey boxes.** Low buildings (under 14 m) within 170 m of the drive
+  are park buildings: schist or red brick on a darker plinth, a hipped slate or green roof with a 0.75 m overhang, a
+  brick chimney, and a porch (platform, posts, lean-to roof) along a footprint longer than 11 m. The avenue blocks stand
+  17 m and more, so the height test keeps them out. Where: `Buildings.ts` `lowParkBuilding`, `addParkBuilding`.
+- **Bondi at 450 m showed nobody.** Sand was searched only 154 m either side of the route; the beach is 200 m away. 264 m
+  now, and more lawn groups. Left-hand traffic is checked with a frozen frame: an oncoming car on the rider's right and
+  an overtaking car passing on the right (`shots/sydney/r4-left-hand-chase.png`).

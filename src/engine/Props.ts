@@ -54,9 +54,15 @@ export class Props extends WorldGroup {
     };
     const jobs: Promise<void>[] = [];
     const poles: { x: number; z: number }[] = [];
+    // Sydney's promenades map a bench every few metres: drawn all, they read as a timber-rail fence along the verge
+    const benches: [number, number][] = [];
     for (const [k, p] of osm.pois.entries()) {
       const model = POI_MODEL[p.kind];
       if (!model) continue;
+      if (p.kind === 'bench' && biome?.suburb) {
+        if (benches.some(([bx, bz]) => Math.hypot(bx - p.x, bz - p.z) < 12)) continue;
+        benches.push([p.x, p.z]);
+      }
       const near = index.nearest(p.x, p.z, 400);
       const reach = p.kind === 'peak' || p.kind === 'power:pole' ? 400 : 70;
       if (near.index < 0 || near.dist > reach) continue;
@@ -956,18 +962,46 @@ function sydneyLandmarks(route: Route, index: RouteIndex, osm: OsmWorld, groundA
         x += (ax / al) * (need - near.dist);
         z += (az / al) * (need - near.dist);
       }
-      box(x, z, yaw, L, D, -0.6, 5.2, cream);
-      box(x, z, yaw, 30, D + 1, -0.6, 7.6, cream);
-      roof(x, z, yaw, L + 1.4, D + 1.8, 5.2, 2.4, terracotta);
-      roof(x, z, yaw, 31, D + 2.6, 7.6, 2.8, terracotta);
-      // arcade: dark openings between white piers along both long sides
-      for (const sd of [-1, 1]) {
-        box(x, z, yaw, L - 4, 0.3, 0.2, 3.3, shade, 0, sd * (D / 2 + 0.05));
-        for (let k = -Math.floor(L / 8); k <= Math.floor(L / 8); k++) box(x, z, yaw, 0.7, 0.7, -0.5, 3.6, white, k * 4.2, sd * (D / 2 + 1.5));
-        box(x, z, yaw, L - 3, 1.7, 3.5, 4.0, white, 0, sd * (D / 2 + 0.75));
-        // upper windows on the long faces
-        for (let k = -Math.floor(L / 9); k <= Math.floor(L / 9); k++) box(x, z, yaw, 1.0, 0.1, 3.3, 4.8, srgb(0.2, 0.26, 0.32), k * 4.2 + 2.1, sd * (D / 2 + 0.05));
-        for (let k = -3; k <= 3; k++) box(x, z, yaw, 1.0, 0.1, 5.7, 7.0, srgb(0.2, 0.26, 0.32), k * 4.2, sd * (D / 2 + 0.55));
+      // two storeys: an arcaded ground floor, windows above under a string course; the centre stands a floor higher
+      box(x, z, yaw, L, D, -0.6, 8.6, cream);
+      box(x, z, yaw, 30, D + 1, -0.6, 11.2, cream);
+      // the roofs overhang the walls by two metres: a deep eave over the arcade
+      roof(x, z, yaw, L + 4.4, D + 8, 8.6, 2.5, terracotta);
+      roof(x, z, yaw, 34, D + 8.6, 11.2, 3.0, terracotta);
+      const arches = Math.floor((L - 8) / 4.2 / 2) * 2 + 1;
+      const half = (arches - 1) / 2;
+      const front = D / 2 + 2.0;
+      /** A half disc standing on `y`, in the plane `dv` out from the middle on side `sd`, facing outwards. */
+      const disc = (r: number, y: number, du: number, dv: number, sd: number, c: THREE.Color) => {
+        const gy = groundAt(x, z);
+        if (!Number.isFinite(gy)) return;
+        const cu = Math.cos(yaw), su = Math.sin(yaw);
+        const geo = new THREE.CircleGeometry(r, 14, 0, Math.PI).rotateY(sd < 0 ? Math.PI : 0).translate(0, y, 0).rotateY(-yaw).translate(x + cu * du - su * dv * sd, gy, z + su * du + cu * dv * sd);
+        parts.push([geo, c]);
+      };
+      for (const sd of [-1, 1] as const) {
+        // the gallery: a shaded back wall, then a white arcade of round arches 4.2 m apart and a white entablature over it
+        box(x, z, yaw, L - 3, 0.3, 0.1, 4.4, shade, 0, sd * (D / 2 + 0.05));
+        box(x, z, yaw, arches * 4.2 + 0.8, 0.5, 4.45, 5.1, white, 0, sd * (front + 0.05));
+        box(x, z, yaw, arches * 4.2 + 0.8, 2.0, 4.45, 4.7, white, 0, sd * (D / 2 + 1.0));
+        for (let k = -half; k <= half; k++) {
+          const u = k * 4.2;
+          // the bay is white to the crown of its arch, the opening a dark arch cut into it
+          box(x, z, yaw, 4.2, 0.3, -0.5, 2.7, white, u, sd * front);
+          disc(2.0, 2.7, u, front + 0.06, sd, white);
+          box(x, z, yaw, 3.0, 0.2, 0.1, 2.7, shade, u, sd * (front + 0.1));
+          disc(1.5, 2.7, u, front + 0.12, sd, shade);
+          // above it, a window in a white frame under a lintel
+          box(x, z, yaw, 1.7, 0.1, 5.9, 8.1, white, u, sd * (D / 2 + 0.07));
+          box(x, z, yaw, 1.2, 0.14, 6.1, 7.7, srgb(0.2, 0.26, 0.32), u, sd * (D / 2 + 0.1));
+        }
+        box(x, z, yaw, L + 0.8, 0.5, 8.1, 8.6, white, 0, sd * (D / 2 + 0.2));
+        // the centre block: taller windows and a white pilaster at each end
+        for (let k = -3; k <= 3; k++) {
+          box(x, z, yaw, 1.7, 0.1, 8.9, 10.9, white, k * 4.2, sd * (D / 2 + 0.57));
+          box(x, z, yaw, 1.2, 0.14, 9.1, 10.5, srgb(0.2, 0.26, 0.32), k * 4.2, sd * (D / 2 + 0.6));
+        }
+        for (const e of [-1, 1]) box(x, z, yaw, 1.0, 0.5, -0.5, 11.2, white, e * 14.6, sd * (D / 2 + 0.75));
       }
     }
   }
