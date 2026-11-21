@@ -9,6 +9,8 @@ import { pointAt, type Route, type RouteIndex, type RoutePoint } from '../geo/ro
 import { patchMaterial } from './atmosphere.ts';
 import { loadModel } from './Landmarks.ts';
 import type { Biome } from './biome.ts';
+import { accessoryMaterial, dogGeometry, leashGeometry, pedicabGeometry, Person, PersonKit, strollerGeometry } from './People.ts';
+import { parkBenches, type BenchSpot } from './Props.ts';
 import { Rider } from './Rider.ts';
 import { WorldGroup } from './dispose.ts';
 
@@ -87,11 +89,19 @@ interface Walker {
   dir: 1 | -1;
   speed: number;
   phase: number;
+  /** Rigged park person: legs swing instead of the whole figure bobbing. */
+  rig?: Person;
+  run?: boolean;
 }
 
 /** Someone on foot on a car-free drive: walking or running along the lane at the edge. */
 interface Jogger {
-  obj: THREE.Object3D;
+  obj: THREE.Group;
+  /** Everyone in the group (a runner, a pair, a dog walker, a parent with a pushchair). */
+  people: Person[];
+  run: boolean;
+  /** A dog trotting beside the group (bobs with the stride). */
+  dog?: THREE.Object3D;
   s: number;
   dir: 1 | -1;
   speed: number;
@@ -99,6 +109,30 @@ interface Jogger {
   phase: number;
   /** Not yet put on the road around the rider. */
   fresh: boolean;
+}
+
+/** Someone sitting on one of the park benches, kept on the benches near the rider. */
+interface Sitter {
+  obj: Person;
+  seat: number;
+}
+
+/** A few people standing about on the lawn beside the drive, kept near the rider. */
+interface Cluster {
+  obj: THREE.Group;
+  placed: boolean;
+  s: number;
+}
+
+/** A pedicab on the drive: a rider pedalling and sometimes passengers. */
+interface Pedicab {
+  obj: THREE.Group;
+  rider: Person;
+  s: number;
+  speed: number;
+  phase: number;
+  lateral: number;
+  on: boolean;
 }
 
 interface Vehicle {
@@ -134,6 +168,13 @@ export class Life extends WorldGroup {
   private carFree = false;
   private halfWidth = 3.1;
   private joggers: Jogger[] = [];
+  private benches: BenchSpot[] = [];
+  private sitters: Sitter[] = [];
+  private seatTaken = new Set<number>();
+  private clusters: Cluster[] = [];
+  private pedicabs: Pedicab[] = [];
+  private index: RouteIndex | null = null;
+  private coverAt: (x: number, z: number) => number = () => 0;
 
   async build(
     route: Route,
@@ -178,6 +219,8 @@ export class Life extends WorldGroup {
     if (biome?.id === 'mediterranean') await this.buildMediterranean(route, index, groundAt, coverAt, r);
     if (this.carFree) {
       // a city park: no cattle, no cars; people instead
+      this.index = index;
+      this.coverAt = coverAt;
       await this.buildPark(route, index, osm, r);
       return;
     }
@@ -289,25 +332,62 @@ export class Life extends WorldGroup {
   }
 
   /**
-   * Central Park's drives are closed to cars: runners and walkers keep to the lane on the inside of
-   * the loop, cyclists share the rest, and the footpaths beside the drive are busy.
+   * Central Park's drives are closed to cars: runners (alone, in pairs and trios), walkers, dog walkers and
+   * parents with pushchairs keep to the lane on the inside of the loop; people sit on the benches and stand
+   * about on the lawns; pedicabs and cyclists share the drive; the footpaths beside it are busy too.
    */
   private async buildPark(route: Route, index: RouteIndex, osm: OsmWorld, r: () => number) {
-    const walkSrc = await loadModel('person-walk.glb');
-    const TOPS = ['#c0392b', '#f1f1ee', '#2e86de', '#f1c40f', '#111214', '#8e44ad', '#7f8c8d', '#16a085', '#ff5d8f', '#34495e', '#9be15d', '#ff7b00'];
-    let k = 0;
-    const person = () => {
-      const o = tinted(walkSrc, ['person_body'], TOPS[k++ % TOPS.length]);
-      o.scale.setScalar(0.9 + r() * 0.16);
-      this.add(o);
-      return o;
-    };
-    // on the drive: three in four run, the rest walk; most go the way the loop goes
-    for (let i = 0; i < 26; i++) {
-      const run = r() < 0.75;
+    const kit = await PersonKit.load();
+    const acc = accessoryMaterial();
+    const person = (scale = 0.9 + r() * 0.18) => kit.rigged(Math.floor(r() * kit.count), scale);
+    const DOGS: [string, string][] = [['#b8864b', '#5a3b1c'], ['#1c1b1b', '#0d0d0d'], ['#e6dfd0', '#a89b84'], ['#6b4a2f', '#2d1d10'], ['#9a9a96', '#4d4d4a']];
+    const STROLLERS = ['#243a5e', '#3d3f44', '#8a2f2a', '#2c5a47'];
+    // on the drive: groups of one to three, a dog walker, a parent with a pushchair
+    for (let i = 0; i < 56; i++) {
+      const g = new THREE.Group();
+      const kind = r();
+      const people: Person[] = [];
+      let run = r() < 0.7;
+      let dog: THREE.Object3D | undefined;
+      const put = (x: number, z: number, sc?: number) => {
+        const p = person(sc);
+        p.position.set(x, 0, z);
+        g.add(p);
+        people.push(p);
+      };
+      if (kind < 0.42) put(0, 0);
+      else if (kind < 0.66) {
+        put(-0.5, 0);
+        put(0.5, 0.1);
+      } else if (kind < 0.76) {
+        put(-0.55, 0);
+        put(0.5, 0.35);
+        put(0, -0.9);
+      } else if (kind < 0.88) {
+        run = false;
+        put(0, 0);
+        const [coat, dark] = DOGS[Math.floor(r() * DOGS.length)];
+        const d = new THREE.Mesh(dogGeometry(coat, dark), acc);
+        d.position.set(1.0, 0, -0.5);
+        d.scale.setScalar(0.8 + r() * 0.35);
+        d.castShadow = true;
+        g.add(d);
+        const leash = new THREE.Mesh(leashGeometry(new THREE.Vector3(0.22, 0.85, -0.2), new THREE.Vector3(0.98, 0.68, -0.8)), acc);
+        g.add(leash);
+        dog = d;
+      } else {
+        run = r() < 0.25;
+        put(0, 0);
+        const s = new THREE.Mesh(strollerGeometry(STROLLERS[Math.floor(r() * STROLLERS.length)]), acc);
+        s.position.set(0, 0, -0.85);
+        s.castShadow = true;
+        g.add(s);
+      }
+      this.add(g);
       this.joggers.push({
-        obj: person(), s: r() * route.length, dir: r() < 0.7 ? 1 : -1, speed: run ? 2.5 + r() * 1.4 : 1.2 + r() * 0.4,
-        lateral: this.halfWidth - 0.6 - r() * 1.6, phase: r() * 10, fresh: true,
+        obj: g, people, run, dog, s: r() * route.length, dir: r() < 0.7 ? 1 : -1,
+        speed: run ? 2.5 + r() * 1.2 : 1.1 + r() * 0.35,
+        lateral: this.halfWidth - 1.3 - r() * 1.1, phase: r() * 10, fresh: true,
       });
     }
     // on the footpaths within sight of the drive
@@ -316,12 +396,65 @@ export class Life extends WorldGroup {
       const m = Math.floor(l.pts.length / 4) * 2;
       return index.nearest(l.pts[m], l.pts[m + 1], 160).index >= 0;
     });
-    for (let i = 0; i < 70 && paths.length; i++) {
+    for (let i = 0; i < 46 && paths.length; i++) {
       const l = paths[Math.floor(r() * paths.length)];
+      const run = r() < 0.25;
+      const p = person();
+      this.add(p);
       this.walkers.push({
-        obj: person(), pts: l.pts, seg: Math.floor(r() * (l.pts.length / 2 - 1)), t: r(), dir: r() < 0.5 ? 1 : -1,
-        speed: r() < 0.25 ? 2.4 + r() * 1.0 : 1.0 + r() * 0.5, phase: r() * 10,
+        obj: p, rig: p, run, pts: l.pts, seg: Math.floor(r() * (l.pts.length / 2 - 1)), t: r(), dir: r() < 0.5 ? 1 : -1,
+        speed: run ? 2.4 + r() * 1.0 : 1.0 + r() * 0.5, phase: r() * 10,
       });
+    }
+    // sitting on the benches Props drew
+    this.benches = parkBenches(route, this.halfWidth);
+    for (let i = 0; i < 26 && this.benches.length; i++) {
+      const p = person();
+      p.sit(0.05 + r() * 0.12);
+      p.visible = false;
+      this.add(p);
+      this.sitters.push({ obj: p, seat: -1 });
+    }
+    // standing about on the lawns: friends chatting, a parent with a child, someone looking at the view
+    for (let i = 0; i < 18; i++) {
+      const g = new THREE.Group();
+      const n = 1 + Math.floor(r() * 3.4);
+      const rad = 0.55 + r() * 0.35;
+      const a0 = r() * Math.PI * 2;
+      for (let k = 0; k < n; k++) {
+        const kid = n > 1 && k === n - 1 && r() < 0.3;
+        const m = kit.standing(Math.floor(r() * kit.count), kid ? 0.62 : 0.9 + r() * 0.18);
+        const a = a0 + (k / n) * Math.PI * 2;
+        m.position.set(n === 1 ? 0 : Math.cos(a) * rad, 0, n === 1 ? 0 : Math.sin(a) * rad);
+        // facing the middle of the group
+        m.rotation.y = n === 1 ? 0 : Math.atan2(-Math.cos(a), -Math.sin(a)) + (r() - 0.5) * 0.7;
+        g.add(m);
+      }
+      g.visible = false;
+      this.add(g);
+      this.clusters.push({ obj: g, placed: false, s: 0 });
+    }
+    // pedicabs hunting for fares
+    for (let i = 0; i < 4; i++) {
+      const g = new THREE.Group();
+      const body = new THREE.Mesh(pedicabGeometry(['#d9b43a', '#c93a2c', '#2d6a9f', '#e8e4d8'][i], ['#1d1d1f', '#f1f1ee', '#2d4a3a', '#8a2f2a'][i]), acc);
+      body.castShadow = true;
+      g.add(body);
+      const rider = person(1);
+      rider.position.set(0, -0.02, -1.0);
+      rider.torso.rotation.x = -0.25;
+      g.add(rider);
+      if (r() < 0.75) {
+        for (const x of r() < 0.5 ? [-0.2, 0.2] : [0]) {
+          const pax = person(0.95);
+          pax.sit(0.05);
+          pax.position.set(x, 0.66 - 0.82 * 0.95, 0.5);
+          g.add(pax);
+        }
+      }
+      g.visible = false;
+      this.add(g);
+      this.pedicabs.push({ obj: g, rider, s: 0, speed: 3 + r() * 1.2, phase: r() * 6, lateral: 1.3, on: false });
     }
     for (let i = 0; i < 8; i++) {
       const c = new Rider({ kit: KITS[i], accent: '#111214', bike: i % 2 ? '#e9e9e4' : '#1a1c1f' });
@@ -341,7 +474,8 @@ export class Life extends WorldGroup {
       if (route.loop) rel = ((((rel + L / 2) % L) + L) % L) - L / 2;
       if (j.fresh || rel < -120 || rel > 700) {
         // out of sight: step back in beyond the view ahead (at the start: anywhere along it)
-        j.s = riderS + ((j.fresh ? 30 : 450) + this.rand() * (j.fresh ? 660 : 240)) * riderDir;
+        // (at the start most of them near, so the first view is already busy)
+        j.s = riderS + (j.fresh ? 25 + this.rand() ** 1.8 * 665 : 450 + this.rand() * 240) * riderDir;
         j.fresh = false;
         if (route.loop) j.s = ((j.s % L) + L) % L;
         else if (j.s < 0 || j.s > L) { j.obj.visible = false; continue; }
@@ -350,13 +484,118 @@ export class Life extends WorldGroup {
       const p = pointAt(route, j.s, this.tmp);
       // the lane for people on foot is on the left of the loop's direction, whichever way they run
       const side = -j.lateral * riderDir;
-      j.phase += dt * j.speed * 1.9;
+      j.phase += dt * j.speed * (j.run ? 3.0 : 4.2);
       j.obj.position.set(
-        p.x + Math.cos(p.heading) * side, p.ele + 0.02 + Math.abs(Math.sin(j.phase * Math.PI)) * (j.speed > 2 ? 0.07 : 0.04),
+        p.x + Math.cos(p.heading) * side, p.ele + 0.02 + Math.abs(Math.sin(j.phase)) * (j.run ? 0.05 : 0.025),
         p.z + Math.sin(p.heading) * side,
       );
       const fx = Math.sin(p.heading) * j.dir, fz = -Math.cos(p.heading) * j.dir;
       j.obj.rotation.y = Math.atan2(-fx, -fz);
+      j.people.forEach((q, k) => q.gait(j.phase + k * 1.7, j.run));
+      if (j.dog) j.dog.position.y = Math.abs(Math.sin(j.phase * 1.1)) * 0.04;
+    }
+  }
+
+  /** Benches near the rider get sitters; ones the rider has passed are handed on to benches ahead. */
+  private sit(route: Route, riderS: number, riderDir: 1 | -1) {
+    if (!this.sitters.length) return;
+    const L = route.length;
+    const relOf = (s: number) => {
+      let rel = (s - riderS) * riderDir;
+      if (route.loop) rel = ((((rel + L / 2) % L) + L) % L) - L / 2;
+      return rel;
+    };
+    for (const st of this.sitters) {
+      if (st.seat >= 0 && relOf(this.benches[st.seat >> 1].s) > -90) continue;
+      if (st.seat >= 0) {
+        this.seatTaken.delete(st.seat);
+        st.seat = -1;
+      }
+      // pick a free seat 40–460 m ahead (a few tries per frame is plenty)
+      for (let tries = 0; tries < 6; tries++) {
+        const bi = Math.floor(this.rand() * this.benches.length);
+        const rel = relOf(this.benches[bi].s);
+        const seat = bi * 2 + (this.rand() < 0.5 ? 0 : 1);
+        if (rel < 40 || rel > 460 || this.seatTaken.has(seat)) continue;
+        const b = this.benches[bi];
+        const y = this.groundAt(b.x, b.z);
+        if (!Number.isFinite(y)) continue;
+        this.seatTaken.add(seat);
+        st.seat = seat;
+        const lx = (seat & 1 ? 0.45 : -0.45), lz = 0.05, c = Math.cos(b.yaw), sn = Math.sin(b.yaw);
+        st.obj.position.set(b.x + c * lx + sn * lz, y + 0.5 - 0.83 * st.obj.scale.y, b.z - sn * lx + c * lz);
+        st.obj.rotation.y = b.yaw;
+        st.obj.visible = true;
+        break;
+      }
+      if (st.seat < 0) st.obj.visible = false;
+    }
+  }
+
+  /** Little groups standing on the lawn beside the drive, set down ahead of the rider as the old ones fall behind. */
+  private gather(route: Route, riderS: number, riderDir: 1 | -1) {
+    const index = this.index;
+    if (!index) return;
+    const L = route.length;
+    for (const c of this.clusters) {
+      let rel = (c.s - riderS) * riderDir;
+      if (route.loop) rel = ((((rel + L / 2) % L) + L) % L) - L / 2;
+      if (c.placed && rel > -80) continue;
+      c.placed = false;
+      c.obj.visible = false;
+      for (let tries = 0; tries < 14; tries++) {
+        const s = riderS + (c.s === 0 ? 20 + this.rand() ** 1.6 * 480 : 60 + this.rand() * 440) * riderDir;
+        const ws = route.loop ? ((s % L) + L) % L : s;
+        if (ws < 0 || ws > L) continue;
+        const i = Math.min(route.n - 1, Math.round(ws / route.step));
+        const h = route.heading[i];
+        const side = this.rand() < 0.5 ? -1 : 1;
+        const d = this.halfWidth + 5 + this.rand() ** 1.3 * 55;
+        const x = route.x[i] + Math.cos(h) * d * side, z = route.z[i] + Math.sin(h) * d * side;
+        if (index.nearest(x, z, this.halfWidth + 4).index >= 0 || this.coverAt(x, z) !== 1) continue;
+        // spread out: not a queue of groups along one lawn
+        if (this.clusters.some((o) => o !== c && o.placed && Math.hypot(o.obj.position.x - x, o.obj.position.z - z) < 30)) continue;
+        const y = this.groundAt(x, z);
+        if (!Number.isFinite(y)) continue;
+        c.obj.position.set(x, y, z);
+        // mostly turned to the drive, a few looking away across the lawn
+        c.obj.rotation.y = Math.atan2(Math.cos(h) * side, Math.sin(h) * side) + (this.rand() - 0.5) * 2.2;
+        c.obj.visible = true;
+        c.placed = true;
+        c.s = ws;
+        break;
+      }
+    }
+  }
+
+  /** Pedicabs drift along the drive; one at a time is brought in ahead of the rider. */
+  private pedi(dt: number, route: Route, riderS: number, riderDir: 1 | -1) {
+    const L = route.length;
+    for (const c of this.pedicabs) {
+      if (c.on) {
+        c.s += c.speed * riderDir * dt;
+        if (route.loop) c.s = ((c.s % L) + L) % L;
+      }
+      let rel = (c.s - riderS) * riderDir;
+      if (route.loop) rel = ((((rel + L / 2) % L) + L) % L) - L / 2;
+      if (!c.on || rel < -120 || rel > 700) {
+        c.s = riderS + (40 + this.rand() * 560) * riderDir;
+        if (route.loop) c.s = ((c.s % L) + L) % L;
+        else if (c.s < 0 || c.s > L) {
+          c.obj.visible = false;
+          continue;
+        }
+        c.on = true;
+      }
+      const p = pointAt(route, c.s, this.tmp);
+      c.phase += dt * c.speed * 2.2;
+      // keeps to the right of its own direction, like the cyclists
+      const h = p.heading + (riderDir < 0 ? Math.PI : 0);
+      c.obj.position.set(p.x + Math.cos(h) * c.lateral, p.ele + 0.02, p.z + Math.sin(h) * c.lateral);
+      c.obj.rotation.set(0, -h, 0);
+      c.obj.visible = true;
+      c.rider.legL.rotation.x = 1.0 + Math.sin(c.phase) * 0.45;
+      c.rider.legR.rotation.x = 1.0 - Math.sin(c.phase) * 0.45;
     }
   }
 
@@ -498,13 +737,24 @@ export class Life extends WorldGroup {
       }
       const x = ax + (bx - ax) * w.t, z = az + (bz - az) * w.t;
       const y = this.groundAt(x, z);
-      w.phase += dt * w.speed * 1.9;
-      w.obj.position.set(x, (Number.isFinite(y) ? y : w.obj.position.y) + Math.abs(Math.sin(w.phase * Math.PI)) * 0.04, z);
+      if (w.rig) {
+        w.phase += dt * w.speed * (w.run ? 3.0 : 4.2);
+        w.obj.position.set(x, (Number.isFinite(y) ? y : w.obj.position.y) + Math.abs(Math.sin(w.phase)) * (w.run ? 0.05 : 0.025), z);
+        w.rig.gait(w.phase, !!w.run);
+      } else {
+        w.phase += dt * w.speed * 1.9;
+        w.obj.position.set(x, (Number.isFinite(y) ? y : w.obj.position.y) + Math.abs(Math.sin(w.phase * Math.PI)) * 0.04, z);
+      }
       const hx = (bx - ax) * w.dir, hz = (bz - az) * w.dir;
       w.obj.rotation.y = Math.atan2(-hx, -hz);
     }
     this.traffic(dt, route, riderS, riderDir, riderSpeed, time);
-    if (this.carFree) this.jog(dt, route, riderS, riderDir);
+    if (this.carFree) {
+      this.jog(dt, route, riderS, riderDir);
+      this.sit(route, riderS, riderDir);
+      this.gather(route, riderS, riderDir);
+      this.pedi(dt, route, riderS, riderDir);
+    }
     this.ride(dt, route, riderS, riderDir, riderSpeed);
   }
 

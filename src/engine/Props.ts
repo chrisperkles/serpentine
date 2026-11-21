@@ -7,6 +7,7 @@ import type { Building, OsmWorld } from '../geo/osm.ts';
 import type { Route, RouteIndex } from '../geo/route.ts';
 import { patchMaterial } from './atmosphere.ts';
 import { loadModel } from './Landmarks.ts';
+import { mergeVertices } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
 import { mergeColored } from './Road.ts';
 import type { Biome } from './biome.ts';
 import { markShared, WorldGroup } from './dispose.ts';
@@ -88,6 +89,64 @@ export class Props extends WorldGroup {
     this.add(this.wires(osm, poles, groundAt));
     this.add(this.towers(osm, groundAt, models, biome));
     this.add(this.fences(osm, index, groundAt, halfWidth, biome));
+    if (biome?.carFree) {
+      this.add(parkFurniture(route, index, osm, groundAt, halfWidth));
+      await this.outcrops(osm, index, groundAt, halfWidth);
+    }
+  }
+
+  /**
+   * Manhattan schist: the park's lawns are broken by dark grey, low, wide outcrops. OSM maps them as bare_rock
+   * polygons; the scanned boulder is squashed flat and tinted dark and dropped in a few times per polygon.
+   */
+  private async outcrops(osm: OsmWorld, index: RouteIndex, groundAt: (x: number, z: number) => number, halfWidth: number) {
+    const src = await loadModel('rock_07.glb');
+    src.updateMatrixWorld(true);
+    let scan: THREE.Mesh | null = null;
+    src.traverse((c) => {
+      if (!scan && (c as THREE.Mesh).isMesh) scan = c as THREE.Mesh;
+    });
+    const sm = scan as THREE.Mesh | null;
+    if (!sm) return;
+    let geo = sm.geometry.clone().applyMatrix4(sm.matrixWorld);
+    // the decimated scan has hard creases: soften so the schist reads as weathered stone
+    geo.deleteAttribute('normal');
+    geo = mergeVertices(geo, 0.02);
+    geo.computeVertexNormals();
+    const mat = (sm.material as THREE.MeshStandardMaterial).clone();
+    mat.color.setRGB(0.8, 0.8, 0.84);
+    const spots: THREE.Matrix4[] = [];
+    const q = new THREE.Quaternion(), e = new THREE.Euler();
+    let seed = 1;
+    for (const c of osm.cover) {
+      if (c.cls !== 'rock') continue;
+      const o = c.poly.outer, [x0, z0, x1, z1] = c.poly.bbox;
+      if (index.nearest((x0 + x1) / 2, (z0 + z1) / 2, 230).index < 0) continue;
+      const area = ringAreaXZ(o);
+      if (area < 6) continue;
+      const n = Math.min(9, Math.max(1, Math.round(area / 70)));
+      for (let k = 0, tries = 0; k < n && tries < n * 12; tries++) {
+        seed++;
+        const x = x0 + hash(seed * 1.3) * (x1 - x0), z = z0 + hash(seed * 2.9) * (z1 - z0);
+        if (!inRingXZ(o, x, z)) continue;
+        k++;
+        if (index.nearest(x, z, halfWidth + 3).index >= 0) continue;
+        const y = groundAt(x, z);
+        if (!Number.isFinite(y)) continue;
+        const big = hash(seed * 4.1);
+        const sx = 2.6 + big * 3.6, sy = 2.2 + hash(seed * 5.3) * 2, sz = 2 + hash(seed * 6.7) * 2.6;
+        e.set((hash(seed * 7.7) - 0.5) * 0.12, hash(seed * 8.3) * Math.PI * 2, (hash(seed * 9.1) - 0.5) * 0.12);
+        q.setFromEuler(e);
+        spots.push(new THREE.Matrix4().compose(new THREE.Vector3(x, y - 0.18 * sy, z), q, new THREE.Vector3(sx, sy, sz)));
+      }
+    }
+    if (!spots.length) return;
+    const mesh = new THREE.InstancedMesh(geo, patchMaterial(mat, { key: 'outcrop' }), spots.length);
+    spots.forEach((m, i) => mesh.setMatrixAt(i, m));
+    mesh.castShadow = true;
+    mesh.receiveShadow = true;
+    mesh.computeBoundingSphere();
+    this.add(mesh);
   }
 
   /**
@@ -113,8 +172,8 @@ export class Props extends WorldGroup {
       const y = groundAt(t.x, t.z);
       if (!Number.isFinite(y)) continue;
       if (t.bell) {
-        // Mallorcan bell towers are stone with tile caps: left out rather than drawn Alpine
-        if (biome?.id === 'mediterranean') continue;
+        // Mallorcan bell towers are stone with tile caps, and Midtown's are church steeples between skyscrapers: left out rather than drawn Alpine
+        if (biome?.id === 'mediterranean' || biome?.carFree) continue;
         // a church tower mapped on its own: white shaft and a slate spire
         const H = t.height || 28;
         const w = Math.min(4, Math.max(2.5, t.r || 3));
@@ -194,6 +253,7 @@ export class Props extends WorldGroup {
     const g = new THREE.Group();
     const med = biome?.id === 'mediterranean';
     const mesh = med ? new MedFences() : null;
+    const park = biome?.carFree ? new ParkBarriers(osm) : null;
     const wood = patchMaterial(new THREE.MeshLambertMaterial({ color: 0x5a412b }), { key: 'fence' });
     const stone = patchMaterial(new THREE.MeshLambertMaterial({ color: 0x8e8a82 }), { key: 'wall' });
     const post = new THREE.BoxGeometry(0.1, 1.2, 0.1).translate(0, 0.5, 0);
@@ -211,6 +271,11 @@ export class Props extends WorldGroup {
       for (let i = 0; i + 3 < p.length; i += 2) {
         if (!nearV[i / 2] && !nearV[i / 2 + 1]) continue;
         const ax = p[i], az = p[i + 1], bx = p[i + 2], bz = p[i + 3];
+        if (park && bar.kind !== 'retaining_wall') {
+          // never across the drive (OSM walls end at or run under the road)
+          park.add(ax, az, bx, bz, bar, groundAt, (x, z) => index.nearest(x, z, halfWidth + 0.8).index >= 0);
+          continue;
+        }
         if (mesh && bar.kind === 'fence') {
           mesh.fence(ax, az, bx, bz, groundAt);
           continue;
@@ -255,6 +320,7 @@ export class Props extends WorldGroup {
       }
     }
     if (mesh) g.add(...mesh.build());
+    if (park) g.add(...park.build());
     if (postMats.length) {
       const posts = new THREE.InstancedMesh(post, wood, postMats.length);
       postMats.forEach((m, i) => posts.setMatrixAt(i, m));
@@ -462,4 +528,330 @@ function fieldWallTexture() {
   t.colorSpace = THREE.SRGBColorSpace;
   t.anisotropy = 8;
   return (wallTex = markShared(t));
+}
+
+
+function ringAreaXZ(r: Float32Array): number {
+  let a = 0;
+  for (let i = 0, n = r.length / 2; i < n; i++) {
+    const j = (i + 1) % n;
+    a += r[i * 2] * r[j * 2 + 1] - r[j * 2] * r[i * 2 + 1];
+  }
+  return Math.abs(a) / 2;
+}
+
+function inRingXZ(r: Float32Array, x: number, z: number): boolean {
+  let inside = false;
+  for (let i = 0, n = r.length / 2, j = n - 1; i < n; j = i++) {
+    const xi = r[i * 2], zi = r[i * 2 + 1], xj = r[j * 2], zj = r[j * 2 + 1];
+    if (zi > z !== zj > z && x < ((xj - xi) * (z - zi)) / (zj - zi) + xi) inside = !inside;
+  }
+  return inside;
+}
+
+function distToRing(r: Float32Array, x: number, z: number): number {
+  let best = Infinity;
+  for (let i = 0, n = r.length / 2, j = n - 1; i < n; j = i++) {
+    const ax = r[j * 2], az = r[j * 2 + 1], bx = r[i * 2], bz = r[i * 2 + 1];
+    const dx = bx - ax, dz = bz - az;
+    const t = Math.max(0, Math.min(1, ((x - ax) * dx + (z - az) * dz) / (dx * dx + dz * dz || 1)));
+    best = Math.min(best, Math.hypot(ax + dx * t - x, az + dz * t - z));
+  }
+  return best;
+}
+
+let parkStoneTex: THREE.Texture | null = null;
+let steelTex: THREE.Texture | null = null;
+
+/** Rough Manhattan schist, laid in courses: dark grey-brown blocks, pale lichen, black mortar. 2 m x 1 m per tile. */
+function schistTexture(): THREE.Texture {
+  if (parkStoneTex) return parkStoneTex;
+  const W = 256, H = 128;
+  const c = document.createElement('canvas');
+  c.width = W;
+  c.height = H;
+  const ctx = c.getContext('2d')!;
+  ctx.fillStyle = '#34322f';
+  ctx.fillRect(0, 0, W, H);
+  let seed = 11;
+  const rnd = () => hash(seed++);
+  for (let y = 0, row = 0; y < H; row++) {
+    const h = 20 + Math.floor(rnd() * 14);
+    const rh = Math.min(h, H - y);
+    for (let x = -rnd() * 40; x < W; ) {
+      const w = 34 + rnd() * 58;
+      const l = 0.9 + rnd() * 0.5;
+      const warm = rnd() < 0.3;
+      ctx.fillStyle = `rgb(${Math.round((warm ? 150 : 132) * l)},${Math.round((warm ? 138 : 129) * l)},${Math.round((warm ? 122 : 124) * l)})`;
+      ctx.beginPath();
+      ctx.roundRect(x + 1.5, y + 1.5, w - 3, rh - 3, 4);
+      ctx.fill();
+      // mica glint and pale lichen on some blocks
+      if (rnd() < 0.5) {
+        ctx.fillStyle = 'rgba(190,190,180,0.16)';
+        ctx.fillRect(x + 4 + rnd() * (w - 20), y + 4 + rnd() * (rh - 12), 6 + rnd() * 12, 2);
+      }
+      x += w;
+    }
+    y += h;
+  }
+  const t = new THREE.CanvasTexture(c);
+  t.colorSpace = THREE.SRGBColorSpace;
+  t.wrapS = t.wrapT = THREE.RepeatWrapping;
+  t.anisotropy = 8;
+  return (parkStoneTex = markShared(t));
+}
+
+/** Black steel railing: vertical pickets between a top and a bottom rail on a transparent 1 m x 1.2 m tile. */
+function railTexture(): THREE.Texture {
+  if (steelTex) return steelTex;
+  const W = 128, H = 154;
+  const c = document.createElement('canvas');
+  c.width = W;
+  c.height = H;
+  const ctx = c.getContext('2d')!;
+  ctx.clearRect(0, 0, W, H);
+  ctx.fillStyle = '#0c0d0e';
+  for (let x = 4; x < W; x += 11) ctx.fillRect(x, 10, 4, H - 22);
+  ctx.fillRect(0, 6, W, 8);
+  ctx.fillRect(0, H - 24, W, 7);
+  // spear tips
+  for (let x = 4; x < W; x += 11) {
+    ctx.beginPath();
+    ctx.moveTo(x - 1, 10);
+    ctx.lineTo(x + 2, 0);
+    ctx.lineTo(x + 5, 10);
+    ctx.fill();
+  }
+  const t = new THREE.CanvasTexture(c);
+  t.colorSpace = THREE.SRGBColorSpace;
+  t.wrapS = t.wrapT = THREE.RepeatWrapping;
+  t.anisotropy = 8;
+  return (steelTex = markShared(t));
+}
+
+/**
+ * Central Park's boundaries. Walls (OSM barrier=wall) are the waist-high rough schist wall with a flat capstone
+ * that rings the park; the same OSM kind runs along the Reservoir too, where the real thing is a low black steel
+ * railing, so a barrier within a few metres of that big water becomes the railing instead.
+ */
+class ParkBarriers {
+  private wall = { pos: [] as number[], uv: [] as number[], col: [] as number[], idx: [] as number[] };
+  private rail = { pos: [] as number[], uv: [] as number[], idx: [] as number[] };
+  private posts: THREE.Matrix4[] = [];
+  private along = 0;
+  private reservoirs: Float32Array[];
+
+  constructor(osm: OsmWorld) {
+    this.reservoirs = osm.water.filter((w) => ringAreaXZ(w.outer) > 250_000).map((w) => w.outer);
+  }
+
+  private nearReservoir(x: number, z: number) {
+    return this.reservoirs.some((r) => distToRing(r, x, z) < 16);
+  }
+
+  add(
+    ax: number, az: number, bx: number, bz: number, bar: { kind: string; height?: number },
+    groundAt: (x: number, z: number) => number, blocked: (x: number, z: number) => boolean,
+  ) {
+    const len = Math.hypot(bx - ax, bz - az);
+    if (len < 0.4) return;
+    const steel = bar.kind === 'fence' || this.nearReservoir((ax + bx) / 2, (az + bz) / 2);
+    const steps = Math.max(1, Math.round(len / (steel ? 2.5 : 2)));
+    const nx = -(bz - az) / len, nz = (bx - ax) / len;
+    const q = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), -Math.atan2(bz - az, bx - ax));
+    const H = steel ? 1.2 : Math.min(2.2, bar.height ?? 1.05);
+    const T = 0.25;
+    for (let k = 0; k < steps; k++) {
+      const t0 = k / steps, t1 = (k + 1) / steps;
+      const x0 = ax + (bx - ax) * t0, z0 = az + (bz - az) * t0, x1 = ax + (bx - ax) * t1, z1 = az + (bz - az) * t1;
+      if (blocked((x0 + x1) / 2, (z0 + z1) / 2)) continue;
+      const y0 = groundAt(x0, z0), y1 = groundAt(x1, z1);
+      if (!Number.isFinite(y0) || !Number.isFinite(y1)) continue;
+      const seg = Math.hypot(x1 - x0, z1 - z0);
+      if (steel) {
+        const r = this.rail, b = r.pos.length / 3;
+        r.pos.push(x0, y0, z0, x1, y1, z1, x1, y1 + H, z1, x0, y0 + H, z0);
+        r.uv.push(0, 0, seg, 0, seg, H / 1.2, 0, H / 1.2);
+        r.idx.push(b, b + 1, b + 2, b, b + 2, b + 3);
+        this.posts.push(new THREE.Matrix4().compose(new THREE.Vector3(x0, y0 - 0.1, z0), q, new THREE.Vector3(1, 1, 1)));
+        continue;
+      }
+      // cross-section: offset, height (negative = buried), colour tone; the capstone overhangs and is paler
+      const prof: [number, number, number][] = [
+        [-T, -0.3, 0.8], [-T * 0.92, H, 0.8], [-T - 0.05, H, 0.8], [-T - 0.05, H + 0.07, 1.25],
+        [T + 0.05, H + 0.07, 1.25], [T + 0.05, H, 0.8], [T * 0.92, H, 0.8], [T, -0.3, 0.8],
+      ];
+      const w = this.wall;
+      const u0 = (this.along + len * t0) / 2, u1 = (this.along + len * t1) / 2;
+      const base = w.pos.length / 3;
+      for (const [x, z, y, u] of [[x0, z0, y0, u0], [x1, z1, y1, u1]] as const) {
+        for (const [o, h, tone] of prof) {
+          w.pos.push(x + nx * o, y + h, z + nz * o);
+          w.uv.push(u, h >= H ? 0.95 : (h + 0.3) / 1.4 * 0.9);
+          w.col.push(tone, tone, tone);
+        }
+      }
+      const P = prof.length;
+      for (let j = 0; j < P - 1; j++) {
+        const a = base + j, b = a + 1, c = a + P, d = c + 1;
+        w.idx.push(a, c, b, b, c, d);
+      }
+    }
+    this.along += len;
+  }
+
+  build(): THREE.Object3D[] {
+    const out: THREE.Object3D[] = [];
+    const geo = (d: { pos: number[]; uv: number[]; idx: number[]; col?: number[] }, normals: boolean) => {
+      const g = new THREE.BufferGeometry();
+      g.setAttribute('position', new THREE.Float32BufferAttribute(d.pos, 3));
+      g.setAttribute('uv', new THREE.Float32BufferAttribute(d.uv, 2));
+      if (d.col) g.setAttribute('color', new THREE.Float32BufferAttribute(d.col, 3));
+      g.setIndex(d.idx);
+      if (normals) g.computeVertexNormals();
+      g.computeBoundingSphere();
+      return g;
+    };
+    if (this.wall.idx.length) {
+      const mat = patchMaterial(
+        new THREE.MeshStandardMaterial({ map: schistTexture(), vertexColors: true, roughness: 0.96, side: THREE.DoubleSide }),
+        { key: 'parkwall' },
+      );
+      const m = new THREE.Mesh(geo(this.wall, true), mat);
+      m.castShadow = true;
+      m.receiveShadow = true;
+      out.push(m);
+    }
+    if (this.rail.idx.length) {
+      const mat = new THREE.MeshLambertMaterial({ map: railTexture(), alphaTest: 0.4, side: THREE.DoubleSide });
+      mat.alphaToCoverage = true;
+      const g = geo(this.rail, false);
+      g.computeVertexNormals();
+      const m = new THREE.Mesh(g, patchMaterial(mat, { key: 'parkrail' }));
+      m.receiveShadow = true;
+      out.push(m);
+      const posts = new THREE.InstancedMesh(
+        new THREE.BoxGeometry(0.07, 1.3, 0.07).translate(0, 0.6, 0),
+        patchMaterial(new THREE.MeshLambertMaterial({ color: 0x0c0d0e }), { key: 'parkpost' }),
+        this.posts.length,
+      );
+      this.posts.forEach((p, i) => posts.setMatrixAt(i, p));
+      posts.castShadow = true;
+      posts.computeBoundingSphere();
+      out.push(posts);
+    }
+    return out;
+  }
+}
+
+export interface BenchSpot {
+  x: number;
+  z: number;
+  /** Yaw that points the bench's front (-Z) at the drive. */
+  yaw: number;
+  /** Arc length of the nearest route point (m). */
+  s: number;
+}
+
+/**
+ * Park benches in short rows along the drive, facing it, set back past the lamp line. Deterministic (hash, no
+ * state) so Life can seat people on exactly the benches Props drew.
+ */
+export function parkBenches(route: Route, halfWidth: number): BenchSpot[] {
+  const out: BenchSpot[] = [];
+  const off = halfWidth + 3.8;
+  for (let s = 25 + hash(1) * 30, st = 1; s < route.length - 10; st++, s += 24 + hash(st * 3.7) * 48) {
+    const side = hash(st * 1.9) < 0.5 ? -1 : 1;
+    const n = 1 + Math.floor(hash(st * 5.3) * 3.2);
+    for (let j = 0; j < n; j++) {
+      const ss = s + (j - (n - 1) / 2) * 2.3;
+      const i = Math.max(0, Math.min(route.n - 1, Math.round(ss / route.step)));
+      const h = route.heading[i];
+      const fx = -side * Math.cos(h), fz = -side * Math.sin(h);
+      out.push({
+        x: route.x[i] + Math.cos(h) * off * side, z: route.z[i] + Math.sin(h) * off * side, yaw: Math.atan2(-fx, -fz), s: i * route.step,
+      });
+    }
+  }
+  return out;
+}
+
+/** Benches, litter bins and OSM street lamps on the footpaths: black cast iron and dark green, instanced. */
+function parkFurniture(
+  route: Route, index: RouteIndex, osm: OsmWorld, groundAt: (x: number, z: number) => number, halfWidth: number,
+): THREE.Object3D {
+  const g = new THREE.Group();
+  const srgb = (r: number, gg: number, b: number) => new THREE.Color().setRGB(r, gg, b, THREE.SRGBColorSpace);
+  const iron = srgb(0.07, 0.07, 0.08), green = srgb(0.1, 0.27, 0.15);
+  const mat = (key: string) => patchMaterial(new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.6, metalness: 0.35 }), { key });
+  const inst = (geo: THREE.BufferGeometry, key: string, ms: THREE.Matrix4[]) => {
+    if (!ms.length) return;
+    const m = new THREE.InstancedMesh(geo, mat(key), ms.length);
+    ms.forEach((x, i) => m.setMatrixAt(i, x));
+    m.castShadow = true;
+    m.receiveShadow = true;
+    m.computeBoundingSphere();
+    g.add(m);
+  };
+  // bench: seven green slats (three seat, four back), cast-iron end frames with scrolled arms. Front is -Z.
+  const slat = (y: number, z: number, tilt: number) => new THREE.BoxGeometry(1.85, 0.05, 0.1).rotateX(tilt).translate(0, y, z);
+  const frame = (x: number) => [
+    [new THREE.BoxGeometry(0.05, 0.44, 0.05).translate(x, 0.22, -0.2), iron],
+    [new THREE.BoxGeometry(0.05, 0.44, 0.05).translate(x, 0.22, 0.2), iron],
+    [new THREE.BoxGeometry(0.05, 0.05, 0.5).translate(x, 0.46, 0), iron],
+    [new THREE.BoxGeometry(0.05, 0.5, 0.05).rotateX(0.2).translate(x, 0.72, 0.24), iron],
+    [new THREE.BoxGeometry(0.05, 0.05, 0.42).translate(x, 0.62, -0.02), iron],
+  ] as [THREE.BufferGeometry, THREE.Color][];
+  const bench = mergeColored([
+    ...([-0.15, 0, 0.15] as const).map((z) => [slat(0.47, z, 0), green] as [THREE.BufferGeometry, THREE.Color]),
+    ...([0.58, 0.68, 0.78, 0.88] as const).map((y, k) => [slat(y, 0.25 + k * 0.045, 0.2), green] as [THREE.BufferGeometry, THREE.Color]),
+    ...frame(-0.85), ...frame(0.85),
+  ]);
+  const spots = parkBenches(route, halfWidth);
+  const benches: THREE.Matrix4[] = [], bins: THREE.Matrix4[] = [];
+  const q = new THREE.Quaternion(), up = new THREE.Vector3(0, 1, 0), one = new THREE.Vector3(1, 1, 1);
+  spots.forEach((b, i) => {
+    const y = groundAt(b.x, b.z);
+    if (!Number.isFinite(y)) return;
+    q.setFromAxisAngle(up, b.yaw);
+    benches.push(new THREE.Matrix4().compose(new THREE.Vector3(b.x, y - 0.02, b.z), q, one));
+    // a wire litter bin at the end of every third row
+    if (i % 3 === 0) {
+      const bx = b.x + Math.cos(b.yaw) * 1.7, bz = b.z - Math.sin(b.yaw) * 1.7;
+      const by = groundAt(bx, bz);
+      if (Number.isFinite(by)) bins.push(new THREE.Matrix4().makeTranslation(bx, by, bz));
+    }
+  });
+  inst(bench, 'parkbench', benches);
+  inst(mergeColored([
+    [new THREE.CylinderGeometry(0.27, 0.23, 0.82, 12, 1, true).translate(0, 0.45, 0), green],
+    [new THREE.CylinderGeometry(0.28, 0.28, 0.05, 12).translate(0, 0.88, 0), iron],
+    [new THREE.CylinderGeometry(0.23, 0.23, 0.05, 12).translate(0, 0.05, 0), iron],
+    [new THREE.CylinderGeometry(0.03, 0.03, 0.82, 6).translate(0.2, 0.45, 0), iron],
+    [new THREE.CylinderGeometry(0.03, 0.03, 0.82, 6).translate(-0.2, 0.45, 0), iron],
+  ]), 'parkbin', bins);
+  // the park's cast-iron lamp posts that OSM maps on the footpaths (the drive's own are set by Road)
+  const lampGeo = mergeColored([
+    [new THREE.CylinderGeometry(0.1, 0.17, 0.7, 10).translate(0, 0.35, 0), iron],
+    [new THREE.CylinderGeometry(0.05, 0.075, 2.6, 10).translate(0, 2.0, 0), iron],
+    [new THREE.CylinderGeometry(0.11, 0.05, 0.22, 10).translate(0, 3.38, 0), iron],
+    [new THREE.SphereGeometry(0.2, 10, 8).scale(1, 1.25, 1).translate(0, 3.7, 0), srgb(0.95, 0.93, 0.8)],
+    [new THREE.ConeGeometry(0.2, 0.2, 10).translate(0, 4.02, 0), iron],
+    [new THREE.SphereGeometry(0.04, 6, 5).translate(0, 4.15, 0), iron],
+  ]);
+  const lamps: THREE.Matrix4[] = [];
+  const seen = new Set<string>();
+  for (const p of osm.pois) {
+    if (p.kind !== 'street_lamp') continue;
+    const near = index.nearest(p.x, p.z, 70);
+    if (near.index < 0 || near.dist < halfWidth + 3) continue;
+    const key = `${Math.round(p.x / 3)},${Math.round(p.z / 3)}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    const y = groundAt(p.x, p.z);
+    if (Number.isFinite(y)) lamps.push(new THREE.Matrix4().makeTranslation(p.x, y - 0.1, p.z));
+  }
+  inst(lampGeo, 'parklamp', lamps);
+  return g;
 }
