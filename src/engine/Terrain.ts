@@ -3,7 +3,7 @@
 // until all four children are ready, skirts hide LOD cracks.
 
 import * as THREE from 'three';
-import { DEM_MAX_Z, heightAtMerc, heightAtMercSmooth, loadDem } from '../geo/elevation.ts';
+import { demZoomFor, hasDetailAt, heightAtMerc, heightAtMercSmooth, heightBest, heightBestSmooth, loadDemChain } from '../geo/elevation.ts';
 import { loadImageryTile, type ImagerySource } from '../geo/imagery.ts';
 import { tileBoundsMerc, type WorldFrame } from '../geo/mercator.ts';
 import { pointAt, type Route, type RouteIndex } from '../geo/route.ts';
@@ -14,6 +14,8 @@ const SEG = 64;
 const VERTS = (SEG + 1) * (SEG + 1);
 const SKIRT = 4 * SEG;
 const MAX_Z = 18;
+/** Where the ground has 0.8 m lidar tiles the mesh goes one level finer (0.8 m cells), but only close to the camera. */
+const FINE_Z = 19;
 const FLATTEN_Z = 16;
 
 const EMPTY = 0, LOADING = 1, READY = 2, FAILED = 3;
@@ -75,6 +77,8 @@ class Node {
   parent: Node | null;
   children: Node[] | null = null;
   state = EMPTY;
+  /** Its heights come from a zoom-17 local tile, so one more level of mesh shows something. */
+  fine = false;
   mesh: THREE.Mesh | null = null;
   abort: AbortController | null = null;
   // world bounds
@@ -197,7 +201,7 @@ export class Terrain extends THREE.Group {
   private visit(node: Node, cam: THREE.Vector3) {
     const d = node.distanceTo(cam);
     const k = this.opts.detail * (node.children ? 1.12 : 1);
-    const wantSplit = node.z < MAX_Z && d < node.size * k;
+    const wantSplit = node.z < MAX_Z ? d < node.size * k : node.z < FINE_Z && node.fine && d < node.size * k * 0.45;
 
     if (node.state !== READY && node.state !== FAILED) {
       if (node.state === EMPTY) this.queue.push({ node, d });
@@ -255,9 +259,11 @@ export class Terrain extends THREE.Group {
     const abort = new AbortController();
     node.abort = abort;
     try {
-      const dz = Math.min(node.z, DEM_MAX_Z);
+      // heights come from the finest local tile there is (1 m lidar along Gaisberg's road), else the global z15
+      const dz = await demZoomFor(node.z, node.x, node.y);
       const shift = node.z - dz;
-      const demJob = loadDem(dz, node.x >> shift, node.y >> shift);
+      node.fine = dz >= 17 && node.z >= MAX_Z;
+      const demJob = loadDemChain(dz, node.x >> shift, node.y >> shift);
       const texJob = this.loadTexture(node, abort.signal);
       await demJob;
       const tex = await texJob;
@@ -277,9 +283,11 @@ export class Terrain extends THREE.Group {
 
   private async loadTexture(node: Node, signal: AbortSignal): Promise<THREE.Texture | null> {
     const src = this.opts.sources;
-    const iz = Math.min(node.z + 1, 19);
+    const iz = node.z + 1;
     let bmp: ImageBitmap | null = null;
     try {
+      // imagery stops at zoom 19: a node at that level takes its own single tile
+      if (iz > 19) throw new Error('single tile');
       const tiles = await Promise.all(
         [0, 1, 2, 3].map((q) => loadImageryTile(src, iz, node.x * 2 + (q & 1), node.y * 2 + (q >> 1), signal)),
       );
@@ -318,6 +326,7 @@ export class Terrain extends THREE.Group {
     const stepM = (mx1 - mx0) / SEG;
     const flatten = node.z >= FLATTEN_Z;
     const smoothDem = node.z >= 13;
+    const detail = this.opts.route.detailDem && dz > 15;
     let minH = Infinity;
     let maxH = -Infinity;
     for (let j = 0; j < G; j++) {
@@ -326,7 +335,9 @@ export class Terrain extends THREE.Group {
         const mx = mx0 + (i - 1) * stepM;
         let h = smoothDem ? heightAtMercSmooth(mx, my, dz) : heightAtMerc(mx, my, dz);
         if (h !== h) h = 0;
-        if (flatten) h = this.flatten((mx - frame.mx0) * frame.k, -(my - frame.my0) * frame.k, h, this.opts.roadSink);
+        if (flatten) {
+          h = this.flatten((mx - frame.mx0) * frame.k, -(my - frame.my0) * frame.k, h, this.opts.roadSink, detail && hasDetailAt(mx, my));
+        }
         heights[j * G + i] = h;
         if (i > 0 && j > 0 && i < G - 1 && j < G - 1) {
           minH = Math.min(minH, h);
@@ -395,13 +406,14 @@ export class Terrain extends THREE.Group {
   /** Rendered ground height incl. the road cut, matching the near-camera mesh. */
   groundHeight(x: number, z: number): number {
     const { frame } = this.opts;
-    const h = heightAtMercSmooth(x / frame.k + frame.mx0, -z / frame.k + frame.my0, DEM_MAX_Z);
+    const mx = x / frame.k + frame.mx0, my = -z / frame.k + frame.my0;
+    const h = heightBestSmooth(mx, my);
     if (h !== h) return NaN;
-    return this.flatten(x, z, h);
+    return this.flatten(x, z, h, 0.45, this.opts.route.detailDem && hasDetailAt(mx, my));
   }
 
   /** Blend raw terrain towards the road: embankments below, cuts above; untouched over tunnels. */
-  private flatten(x: number, z: number, h: number, sink = 0.45): number {
+  private flatten(x: number, z: number, h: number, sink = 0.45, detail = false): number {
     const { routeIndex, roadHalfWidth, route } = this.opts;
     // under a bridge the ground is the lower road's floor, out to the bridge's ends; the model hides it
     for (const b of this.underpasses) {
@@ -415,6 +427,16 @@ export class Terrain extends THREE.Group {
     const road = near.ele - 0.45;
     const cut = h > road + 0.5;
     const under = near.ele - sink;
+    if (detail) {
+      // the 1 m lidar already holds the real cut, ditch and fill, so only the strip under the asphalt is levelled
+      // (the profile is the lidar smoothed, and the route line can sit a few metres off the true road bed), and
+      // the ground returns to the lidar's own shape within a few metres. A bank that is steeper than ~40 degrees
+      // gets a longer blend, so a line that crosses a hillside does not leave a trench along the verge.
+      const dd = near.dist - roadHalfWidth;
+      const verge = under + (sink - 0.06) * smooth01((dd + 0.2) / 1.0);
+      const span = Math.min(10, Math.max(2, Math.abs(h - verge) * 0.8));
+      return verge + (h - verge) * smooth01((dd - 0.6) / span);
+    }
     if (cut && this.opts.cutWidth < 8) {
       // a real road cut: a near-vertical rock face of a few metres right at the verge, then a
       // ~50° bank up to the natural slope (the min() carves it into the hillside)
@@ -439,7 +461,7 @@ export class Terrain extends THREE.Group {
   /** Terrain height (no road flattening) at a world position, NaN when not loaded. */
   heightAt(x: number, z: number): number {
     const { frame } = this.opts;
-    return heightAtMerc(x / frame.k + frame.mx0, -z / frame.k + frame.my0, DEM_MAX_Z);
+    return heightBest(x / frame.k + frame.mx0, -z / frame.k + frame.my0);
   }
 
   dispose() {

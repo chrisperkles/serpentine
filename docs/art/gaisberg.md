@@ -135,3 +135,11 @@ Realism passes 1 and 2 are done (2026-10-10). Baseline scorecard review 2026-10-
 light 3, life 3, rider 4, place 2. Its two blockers were framing (the mast and the basin out of frame). Next: low even
 turf instead of spiky grass cards on the verges, layered crowns and October beech colour, the summit lot with cars
 and the bus, cows at the Gersbergalm (H1).
+
+Terrain pass 2026-11-21 (branch `r4-terrain`): the ground along the road is built from BEV 1 m lidar (zoom 16 within
+400 m of the road, zoom 17 within 90 m; `research/gaisberg/geodata.md` section 1a), so the road cuts, fills, banks
+and hollows are the real ones and the guard rails now stand where the real road drops off. The route's profile is
+the lidar along the line (same smoothing as before). Open: the steep cut banks are bare (ground cover skips slopes
+over about 37 degrees) and take the terrain shader's steep-slope rock treatment, which reads dark and speckled;
+the lidar and the 10 m global tiles differ by 0.3 to 1 m where the baked area ends (skirts hide it, no crack seen).
+

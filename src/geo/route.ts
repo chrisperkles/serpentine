@@ -1,7 +1,7 @@
 // Route model: raw lon/lat polyline → evenly resampled, smoothed path in world space
 // with DEM-derived elevation, gradient, heading and curvature.
 
-import { DEM_MAX_Z, elevationAtMercSync, localDemCovers, preloadDemForPoints } from './elevation.ts';
+import { DEM_MAX_Z, elevationAtMercSync, localDemCovers, localDetailZoom, preloadDemBest, preloadDemForPoints } from './elevation.ts';
 import { lonLatToMerc, makeFrame, mercToLonLat, mercToWorld, type WorldFrame } from './mercator.ts';
 
 export type RouteCategory = 'climb' | 'rolling' | 'flat' | 'city';
@@ -94,6 +94,8 @@ export interface Route {
   underpasses: Underpass[];
   turnEnd: TurnPath | null;
   turnStart: TurnPath | null;
+  /** The profile and the ground beside the road come from fine local tiles (1 m lidar), not the 10 m global DEM. */
+  detailDem: boolean;
   /** Metres of easy lead-in before the route proper (0 without one) and where it starts. */
   leadIn: number;
   leadInFrom?: string;
@@ -193,8 +195,14 @@ export async function buildRoute(data: RouteData): Promise<Route> {
 
   // elevation from the DEM (consistent with the rendered terrain), GPX as fallback
   // high-resolution local DEM bakes are used at full zoom
-  const demZ = (await localDemCovers(merc, DEM_MAX_Z)) ? DEM_MAX_Z : Math.min(DEM_MAX_Z - 1, 14);
+  // (finer local tiles, e.g. 1 m lidar, give the road's profile as it is; see Terrain.flatten for the ground beside it)
+  const detailZ = await localDetailZoom(merc);
+  const demZ = detailZ || ((await localDemCovers(merc, DEM_MAX_Z)) ? DEM_MAX_Z : Math.min(DEM_MAX_Z - 1, 14));
   await preloadDemForPoints(merc, demZ);
+  if (detailZ) {
+    // the turnaround loops at both ends reach past the route's own points, and the fine tiles are small
+    for (const [mx, my] of [merc[0], merc[merc.length - 1]]) await preloadDemBest(mx - 600, my - 600, mx + 600, my + 600);
+  }
   let ele: Float32Array = new Float32Array(n);
   let missing = 0;
   for (let i = 0; i < n; i++) {
@@ -299,6 +307,7 @@ export async function buildRoute(data: RouteData): Promise<Route> {
     tunnels,
     underpasses,
     ...turns(data, frame, { x, z, ele, n, step }, demZ),
+    detailDem: detailZ > 0,
     leadIn,
     leadInFrom: data.climbFrom?.name,
     leadInShift: data.climbFrom ? leadIn - data.climbFrom.cut : 0,

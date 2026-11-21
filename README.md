@@ -95,6 +95,7 @@ Not affiliated with Zwift. Trainer protocol support is based on public community
 | What | Source |
 | --- | --- |
 | Elevation | AWS Terrain Tiles (Terrarium), 10 m DTM in Austria |
+| Terrain along the Gaisberg road | BEV ALS DTM 1 m, © Bundesamt für Eich- und Vermessungswesen (CC BY 4.0), baked to local zoom 16 and 17 tiles |
 | Aerial photos | basemap.at Orthofoto in Austria (CC BY 4.0), Esri World Imagery elsewhere |
 | Forests, buildings, roads | OpenStreetMap via Overpass (© OpenStreetMap contributors, ODbL) |
 | Routing | BRouter |

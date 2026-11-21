@@ -187,6 +187,30 @@ symptom (what it looked like), cause, fix and where. Newest at the bottom of eac
   fixes in `scenes/<id>.json` `osmTags` (`{ "<element id>": { "building:levels": "1" } }`). Where: `Engine.loadWorld`.
 - **Five routes still had their first OSM bake** (no meadows, barriers, power lines, benches, bus stops,
   crosses). Re-bake every preset after `bake-osm.mjs` learns a new feature; compare tag counts with Gaisberg's file.
+- **Gaisberg's road banks were smooth ramps and its guard rails missing.** The terrain came from 3.2 m global tiles
+  (a 10 m model underneath) and `flatten` pulled the ground to the road over 14 m. Fix: BEV 1 m lidar baked to local
+  tiles at zoom 16 (1.6 m, within 400 m of the road) and 17 (0.8 m, within 90 m); where they exist only the strip
+  under the asphalt is levelled and the ground returns to the lidar's own shape within a few metres, so cuts, fills
+  and ditches are real. Routes without such tiles take the old code path. Where: `scripts/bake-dem.py --corridor`,
+  `elevation.ts` (`demZoomFor`, `heightBest`, `hasDetailAt`), `Terrain.flatten`.
+- **Fine tiles must fade out into the coarse ones, and say where they have no data.** The baker fades the lidar into
+  a 4 m blur of itself (what the 10 m global tiles look like) over the outer 120 m, and writes pixels past the
+  lidar's edge as 0 0 0; the engine reads those as NaN and falls back to the coarser zoom. Still a 0.3 to 1 m step
+  where the baked area ends (a few metres on cliffs), hidden by the skirts. The baker needs no network.
+- **Terrain went dark under a high sun after the lidar landed.** The shadow heightfield was a zoom-13 DEM, standing
+  metres above hillsides the lidar had cut away, so the lit ground lay inside its shadow. Fix: where fine tiles are
+  loaded the shadow field samples them too. Where: `TerrainShadow.field`. Any new height source for the mesh needs
+  the same for the shadow field.
+- **The route profile from 1 m lidar is not rougher.** Sampling the lidar on the route line with the same smoothing
+  gave a lower max gradient (13.6 to 13.2 %) and less gradient jitter (0.54 to 0.48 % per 20 m) than the 10 m tiles;
+  the line is often 2 to 3 m off the real road bed, which averages out. Do not snap the profile to the "flattest" bed
+  window: it came out rougher (14.0 %).
+- **0.8 m ground needs 0.8 m mesh cells, but only near the camera.** A zoom-18 node has 1.6 m cells, so the zoom-17
+  tiles were wasted. Nodes whose heights come from a zoom-17 tile may split once more (zoom 19) within about
+  one tile size (~100 m) of the camera: +4 % visible tiles, same fps. Zoom 19 imagery has no finer level, so those
+  nodes take their own single tile. Where: `Terrain.visit`, `FINE_Z`, `loadTexture`.
+- **`sanitize` cannot eat retaining walls.** Its cliff limit is `max(150 m, 4 pixels)`, far above any wall, so the
+  1 m detail is safe at every zoom; it now skips NaN "no data" pixels. Where: `elevation.ts` `sanitize`.
 
 ## Capture and review
 
