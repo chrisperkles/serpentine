@@ -350,6 +350,9 @@ export function dormers(
   b: Builder, cur: THREE.Vector2[], sgn: number, y0: number, dy: number, d: number, spacing: number, roofCol: THREE.Color,
   seed: number, maxCount: number, hwMax = 0.62,
 ) {
+  // a dormer's roof runs back level until it meets the slope: on a shallow roof (the University's, 1 m of rise
+  // over 15 m) that is a white slab metres long sticking out over the eaves. Dormers belong on steep slopes only.
+  if (dy / d < 0.6) return 0;
   const n = cur.length;
   const nin = edgeNormals(cur, sgn);
   let count = 0;

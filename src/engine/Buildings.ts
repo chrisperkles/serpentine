@@ -1725,7 +1725,8 @@ function facadeMaterial(style: Style) {
       float sh = fHash(vec2(seg, bid * 13.0));
       float per = 4.0 + floor(h8 * 3.0);
       float ent = step(mod(seg, per), 0.5) * mid;
-      float retail = step(0.4, h4) * (1.0 - ent);
+      // shops belong to street blocks: the low park buildings (boathouse, sheds, the Dairy) got awnings on the lawn
+      float retail = step(0.4, h4) * (1.0 - ent) * step(14.0, total);
       float ground = 1.0 - step(gfh, hy);
       vec3 ac = awnCol(fHash(vec2(seg * step(0.6, h6) + 3.0, bid * 5.0)));
       vec3 shopGlass = mix(vec3(0.05, 0.045, 0.04), sky * 0.7, 0.1 + 0.5 * fres);
