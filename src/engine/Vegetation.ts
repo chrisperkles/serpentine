@@ -6,10 +6,10 @@ import type { OsmWorld, Polygon } from '../geo/osm.ts';
 import type { Route, RouteIndex } from '../geo/route.ts';
 import { patchMaterial } from './atmosphere.ts';
 import { mergeColored } from './Road.ts';
-import { broadleafGeometry, pineGeometry, preserveCoverage, spruceGeometry, treeAtlas, treeAtlasReady } from './treeModels.ts';
+import { broadleafGeometry, parkTreeGeometry, pineGeometry, preserveCoverage, spruceGeometry, treeAtlas, treeAtlasReady } from './treeModels.ts';
 import { ALPINE, type Biome } from './biome.ts';
 import { impostorGeometry, renderImpostorAtlas } from './impostors.ts';
-import { broadleafTint, coniferTint, dayOfYear, evergreenBroadTint, pineTint } from './season.ts';
+import { broadleafTint, coniferTint, dayOfYear, evergreenBroadTint, parkTint, pineTint } from './season.ts';
 import { pointAt } from '../geo/route.ts';
 import type { BakedTrees } from '../geo/trees.ts';
 import { WorldGroup } from './dispose.ts';
@@ -200,8 +200,15 @@ export class Vegetation extends WorldGroup {
 
     const biome = o.biome ?? ALPINE;
     // Alpine: spruce + beech; Mediterranean: Aleppo pine + holm oak / wild olive
-    const near: Record<Kind, THREE.BufferGeometry> =
-      biome.conifer === 'pine'
+    // Park: the conifer slots carry plane (F) and elm (O), the broadleaf slots two oaks
+    const near: Record<Kind, THREE.BufferGeometry> = biome.parkTrees
+      ? {
+        spruceF: parkTreeGeometry('plane', 7),
+        spruceO: parkTreeGeometry('elm', 11),
+        beechF: parkTreeGeometry('oak', 3),
+        beechO: parkTreeGeometry('oak', 19, 1.1),
+      }
+      : biome.conifer === 'pine'
         ? {
           spruceF: pineGeometry(1, 0.7, 0.85),
           spruceO: pineGeometry(5, 0.52, 1.05),
@@ -226,13 +233,25 @@ export class Vegetation extends WorldGroup {
     const atlas = treeAtlas(biome.atlas);
     const nearMat = preserveCoverage(
       patchMaterial(new THREE.MeshLambertMaterial({ map: atlas, alphaTest: 0.5, side: THREE.DoubleSide, vertexColors: true }), {
-        key: `treecard2:${biome.id}`,
+        key: `treecard2:${biome.id}${biome.parkTrees ? ':park' : ''}`,
         wind: true,
       }),
       2048,
       biome.conifer === 'pine' ? 0.15 : 0.3,
     );
     nearMat.alphaToCoverage = true;
+    if (biome.parkTrees) {
+      // park cards carry crown-wide smooth normals: keep them on the back face of a card too, so a
+      // crown is lit alike from every side instead of speckled by flipped normals
+      const prev = nearMat.onBeforeCompile;
+      nearMat.onBeforeCompile = (shader, renderer) => {
+        prev.call(nearMat, shader, renderer);
+        shader.fragmentShader = shader.fragmentShader.replace(
+          '#include <normal_fragment_begin>',
+          '#include <normal_fragment_begin>\n#ifdef DOUBLE_SIDED\nnormal *= faceDirection;\n#endif',
+        );
+      };
+    }
     const blank = new THREE.DataTexture(new Uint8Array([0, 0, 0, 0]), 1, 1);
     blank.needsUpdate = true;
     const farMat = o.renderer
@@ -340,7 +359,8 @@ export class Vegetation extends WorldGroup {
       const raw = o.rawHeightAt?.(x, z) ?? y;
       if (Math.abs(raw - y) > 1.5) continue;
       const r1 = hash2(i, 17), r2 = hash2(i, 29);
-      const conifer = t.kind[i] === 1;
+      const park = o.biome?.parkTrees === true;
+      const conifer = t.kind[i] === 1 && !park;
       // forest edges along the road keep their lower branches, like open-grown trees
       // park trees stand apart on lawns: every one grows the wide, low crown of an open-grown tree
       const edge = t.open[i] === 1 || near.dist < hw + 14 || o.biome?.lawn === true;
@@ -354,13 +374,23 @@ export class Vegetation extends WorldGroup {
         const w = med ? Math.min(Math.max(cr / 0.3, h * 0.45), h * 1.1) : Math.min(Math.max(cr / 0.24, h * 0.42), h * 0.95);
         add(edge ? 'spruceO' : 'spruceF', x, y - 0.4, z, w, h * (larch ? 0.92 : 1), r1 * 6.283, tint);
       } else {
-        if (med) evergreenBroadTint(r1, tint);
+        // park: ~35 % elm, 30 % plane, 35 % oak/maple; trees by the drive lean to elm and plane
+        let sp: 'elm' | 'plane' | 'oak' | null = null;
+        if (park) {
+          const q = hash2(i, 53);
+          const side = near.dist < hw + 14;
+          sp = q < (side ? 0.42 : 0.3) ? 'elm' : q < (side ? 0.8 : 0.6) ? 'plane' : 'oak';
+        }
+        if (sp) parkTint(sp, day, y, r1, tint);
+        else if (med) evergreenBroadTint(r1, tint);
         else broadleafTint(day, y, r1, tint);
         // irregular crowns: some taller and narrower, some squat
         // park elms, planes and oaks spread nearly as wide as they are tall and meet over the drive
         const lo = o.biome?.lawn ? 0.66 : 0.5;
-        const w = Math.min(Math.max(cr / 0.3, h * lo), h * 1.25) * (0.8 + hash2(i, 41) * 0.4);
-        add(edge ? 'beechO' : 'beechF', x, y - 0.3, z, w, h, r2 * 6.283, tint);
+        // park models are built narrower than their instance width so far impostors keep the whole crown
+        const w = Math.min(Math.max(cr / 0.3, h * lo), h * 1.25) * (0.8 + hash2(i, 41) * 0.4) * (park ? 1.3 : 1);
+        const kind: Kind = sp === 'elm' ? 'spruceO' : sp === 'plane' ? 'spruceF' : sp ? (r1 < 0.5 ? 'beechF' : 'beechO') : edge ? 'beechO' : 'beechF';
+        add(kind, x, y - 0.3, z, w, h, r2 * 6.283, tint);
       }
     }
   }

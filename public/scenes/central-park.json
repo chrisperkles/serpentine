@@ -4,6 +4,7 @@
     "carFree": true,
     "parkLamps": true,
     "lawn": true,
+    "parkTrees": true,
     "centreLine": false,
     "ferns": false
   }

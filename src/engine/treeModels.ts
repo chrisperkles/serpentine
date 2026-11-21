@@ -31,6 +31,7 @@ export const REGIONS = {
   flowers: { u0: 0.5, v0: 0, u1: 1, v1: 0.25 },
 };
 type Region = typeof REGIONS.branch;
+type RGB = [number, number, number];
 
 const atlases = new Map<string, { tex: THREE.Texture; ready: Promise<THREE.Texture> }>();
 
@@ -96,6 +97,11 @@ class Builder {
   idx: number[] = [];
 
   quad(p: THREE.Vector3[], n: THREE.Vector3[], reg: Region, ao: number[], flipU = false, vRange: [number, number] = [0, 1]) {
+    this.quadC(p, n, reg, ao.map((a) => [a, a, a] as RGB), flipU, vRange);
+  }
+
+  /** Quad with a per-vertex colour (bark tints, shaded foliage). */
+  quadC(p: THREE.Vector3[], n: THREE.Vector3[], reg: Region, col: RGB[], flipU = false, vRange: [number, number] = [0, 1]) {
     const b = this.pos.length / 3;
     const v0 = reg.v0 + (reg.v1 - reg.v0) * vRange[0];
     const v1 = reg.v0 + (reg.v1 - reg.v0) * vRange[1];
@@ -110,9 +116,46 @@ class Builder {
       this.nor.push(n[i].x, n[i].y, n[i].z);
       const [u, v] = uvs[i];
       this.uv.push(flipU ? reg.u0 + reg.u1 - u : u, v);
-      this.col.push(ao[i], ao[i], ao[i]);
+      this.col.push(col[i][0], col[i][1], col[i][2]);
     }
     this.idx.push(b, b + 1, b + 2, b, b + 2, b + 3);
+  }
+
+  /**
+   * Bent tube along a polyline with a radius and a colour per ring. Frames are carried along the
+   * path, so thick curved limbs do not twist; the bark texture wraps once round each ring.
+   */
+  tube(pts: THREE.Vector3[], radii: number[], seg: number, reg: Region, tint: (ring: number, k: number) => RGB) {
+    const fr: [THREE.Vector3, THREE.Vector3][] = [];
+    let x: THREE.Vector3 | undefined;
+    for (let i = 0; i < pts.length; i++) {
+      const t = pts[Math.min(i + 1, pts.length - 1)].clone().sub(pts[Math.max(i - 1, 0)]).normalize();
+      if (!x) x = new THREE.Vector3().crossVectors(Math.abs(t.y) > 0.9 ? new THREE.Vector3(1, 0, 0) : UP, t).normalize();
+      else x = x.clone().addScaledVector(t, -x.dot(t)).normalize();
+      fr.push([x.clone(), new THREE.Vector3().crossVectors(t, x)]);
+    }
+    const ring = (i: number, a: number) => fr[i][0].clone().multiplyScalar(Math.cos(a)).addScaledVector(fr[i][1], Math.sin(a));
+    const n = pts.length - 1;
+    for (let i = 0; i < n; i++) {
+      for (let k = 0; k < seg; k++) {
+        const a0 = (k / seg) * Math.PI * 2, a1 = ((k + 1) / seg) * Math.PI * 2;
+        const o = [ring(i, a0), ring(i, a1), ring(i + 1, a1), ring(i + 1, a0)];
+        const p = [
+          pts[i].clone().addScaledVector(o[0], radii[i]),
+          pts[i].clone().addScaledVector(o[1], radii[i]),
+          pts[i + 1].clone().addScaledVector(o[2], radii[i + 1]),
+          pts[i + 1].clone().addScaledVector(o[3], radii[i + 1]),
+        ];
+        const sub: Region = {
+          u0: reg.u0 + ((reg.u1 - reg.u0) * k) / seg,
+          u1: reg.u0 + ((reg.u1 - reg.u0) * (k + 1)) / seg,
+          v0: reg.v0,
+          v1: reg.v1,
+        };
+        const c0 = tint(i, k), c1 = tint(i + 1, k);
+        this.quadC(p, o, sub, [c0, c0, c1, c1], false, [i / n, (i + 1) / n]);
+      }
+    }
   }
 
   /** Tapered tube from a to b (bark), UVs wrap the bark region. */
@@ -425,6 +468,141 @@ export function broadleafGeometry(seed = 2, crownBase = 0.4, width = 1): THREE.B
     const rel = Math.min(1, e);
     const ao = (0.42 + 0.58 * rel) * (0.75 + 0.25 * Math.max(0, outward.y));
     b.quad(p, [n, n, n, n], REGIONS.leaves, [ao, ao, ao, ao], k % 2 === 0);
+  }
+  return b.build();
+}
+
+
+export type ParkSpecies = 'elm' | 'plane' | 'oak';
+
+interface ParkShape {
+  fork: number; // height where the trunk splits
+  trunkR: number; // radius at breast height (model units: the instance scale is the crown width)
+  limbs: number;
+  reach: number; // horizontal reach of the crown centres
+  path: [number, number][]; // limb as [outward fraction, rise above the fork]
+  limbR: number;
+  clusterR: number;
+  cards: number; // cards per leaf cluster
+  leaderTop: number; // top of the central leader (0 = none)
+  crownY: number; // crown centre, for the shading normals
+  crownRy: number;
+}
+
+// Elm: clear trunk, 4-5 steep limbs that arch out into a vase, widest near the top.
+// Plane: shorter, sturdier trunk, heavy near-horizontal limbs, open round crown.
+// Oak: short trunk, broad dense dome.
+const PARK: Record<ParkSpecies, ParkShape> = {
+  elm: { fork: 0.36, trunkR: 0.0185, limbs: 5, reach: 0.27, path: [[0, 0], [0.2, 0.13], [0.55, 0.26], [0.98, 0.34]], limbR: 0.012, clusterR: 0.15, cards: 7, leaderTop: 0.78, crownY: 0.7, crownRy: 0.3 },
+  plane: { fork: 0.28, trunkR: 0.022, limbs: 5, reach: 0.28, path: [[0, 0], [0.16, 0.07], [0.55, 0.17], [0.98, 0.27]], limbR: 0.015, clusterR: 0.155, cards: 6, leaderTop: 0.7, crownY: 0.64, crownRy: 0.32 },
+  oak: { fork: 0.22, trunkR: 0.022, limbs: 6, reach: 0.28, path: [[0, 0], [0.18, 0.1], [0.55, 0.24], [0.98, 0.36]], limbR: 0.0135, clusterR: 0.16, cards: 7, leaderTop: 0.72, crownY: 0.6, crownRy: 0.34 },
+};
+
+/**
+ * New York park tree, height 1. Leaves sit in round clusters of crossed cards (not single cards
+ * pointing out of the crown), shaded with smooth crown-wide normals; trunks flare at the base.
+ * Plane bark is mottled cream and olive, elm and oak bark dark grey-brown.
+ */
+export function parkTreeGeometry(species: ParkSpecies, seed = 1, width = 1): THREE.BufferGeometry {
+  const P = PARK[species];
+  const b = new Builder();
+  const r = rng(seed);
+  const reg = species === 'plane' ? REGIONS.barkLight : REGIONS.barkDark;
+  // bark colour per ring and segment; the texture alone is too saturated (dark) or too plain
+  const patch = (i: number, k: number) => {
+    const h = Math.sin(i * 12.9898 + k * 78.233 + seed * 3.1) * 43758.5453;
+    return h - Math.floor(h);
+  };
+  const barkTint = (shade: number) => (i: number, k: number): RGB => {
+    const n = patch(i, k);
+    if (species === 'plane') {
+      // flaking patches: cream where the outer bark has peeled, olive-grey and dark between
+      const c: RGB = n > 0.55 ? [4.0, 3.5, 2.6] : n > 0.25 ? [2.3, 2.15, 1.5] : [1.3, 1.25, 0.95];
+      return [c[0] * shade, c[1] * shade, c[2] * shade];
+    }
+    const v = (0.85 + n * 0.3) * shade;
+    return species === 'elm' ? [0.62 * v, 0.55 * v, 0.5 * v] : [0.55 * v, 0.5 * v, 0.46 * v];
+  };
+  const seg = 8;
+  const flare = [2.0, 1.45, 1.15, 1.0, 0.97, 0.95, 0.93, 0.92];
+  const nT = flare.length;
+  const trunkPts: THREE.Vector3[] = [];
+  const lean = new THREE.Vector3((r() - 0.5) * 0.03, 0, (r() - 0.5) * 0.03);
+  const trunkRad: number[] = [];
+  for (let i = 0; i < nT; i++) {
+    const t = i / (nT - 1);
+    const y = -0.05 + (P.fork + 0.05) * (i === 0 ? 0 : Math.pow(t, 1.25));
+    trunkPts.push(new THREE.Vector3(lean.x * t * t, y, lean.z * t * t));
+    trunkRad.push(P.trunkR * flare[i] * (1 - 0.25 * t));
+  }
+  b.tube(trunkPts, trunkRad, seg, reg, barkTint(species === 'plane' ? 0.9 : 0.8));
+  const top0 = trunkPts[nT - 1].clone();
+
+  // shading: ellipsoid normals round the whole crown, lit alike from either face of a card
+  const rxc = P.reach + P.clusterR;
+  const shadeAt = (p: THREE.Vector3) => {
+    const e = new THREE.Vector3(p.x / rxc, (p.y - P.crownY) / P.crownRy, p.z / rxc);
+    const len = e.length();
+    const n = e.clone().normalize();
+    n.y += 0.35;
+    n.normalize();
+    // inner leaves and the underside of the crown stay darker
+    const ao = (0.45 + 0.55 * Math.min(1, len)) * (0.72 + 0.28 * Math.min(1, Math.max(0, 0.5 + 0.5 * e.y)));
+    return { n, ao };
+  };
+  const cluster = (c: THREE.Vector3, R: number) => {
+    for (let q = 0; q < P.cards; q++) {
+      const u = r() * 2 - 1;
+      const a = r() * Math.PI * 2;
+      const sq = Math.sqrt(1 - u * u);
+      const dir = new THREE.Vector3(Math.cos(a) * sq, u, Math.sin(a) * sq);
+      const ctr = c.clone().addScaledVector(dir, R * (0.1 + 0.45 * r()));
+      // a third of the cards lie flat so crowns read as leafy from above; the rest cross at random
+      const nrm = q % 3 === 0 ? new THREE.Vector3((r() - 0.5) * 0.5, 1, (r() - 0.5) * 0.5).normalize() : dir.clone().add(new THREE.Vector3(0, 0.3, 0)).normalize();
+      const t1 = new THREE.Vector3().crossVectors(nrm, Math.abs(nrm.y) > 0.9 ? new THREE.Vector3(1, 0, 0) : UP).normalize();
+      const t2 = new THREE.Vector3().crossVectors(nrm, t1).normalize();
+      const spin = r() * Math.PI * 2;
+      const s = R * (0.66 + r() * 0.2) * Math.max(0.85, width * 0.9);
+      const e1 = t1.clone().multiplyScalar(Math.cos(spin)).addScaledVector(t2, Math.sin(spin)).multiplyScalar(s);
+      const e2 = t1.clone().multiplyScalar(-Math.sin(spin)).addScaledVector(t2, Math.cos(spin)).multiplyScalar(s);
+      const p = [ctr.clone().sub(e1).sub(e2), ctr.clone().add(e1).sub(e2), ctr.clone().add(e1).add(e2), ctr.clone().sub(e1).add(e2)];
+      const sh = p.map(shadeAt);
+      b.quadC(p, sh.map((x) => x.n), REGIONS.leaves, sh.map((x) => [x.ao, x.ao, x.ao] as RGB), q % 2 === 0);
+    }
+  };
+
+  const limbTint = barkTint(species === 'plane' ? 1 : 0.7);
+  const a0 = r() * Math.PI * 2;
+  for (let k = 0; k < P.limbs; k++) {
+    const a = a0 + (k / P.limbs) * Math.PI * 2 + (r() - 0.5) * 0.7;
+    const out = new THREE.Vector3(Math.cos(a), 0, Math.sin(a));
+    const side = new THREE.Vector3(-out.z, 0, out.x);
+    const reach = P.reach * (0.8 + r() * 0.3);
+    const rise = 0.9 + r() * 0.2;
+    const pts = P.path.map(([f, dy]) => top0.clone().addScaledVector(out, f * reach).add(new THREE.Vector3(0, dy * rise, 0)));
+    // slight sideways meander so limbs are not planar arcs
+    pts[2].addScaledVector(side, (r() - 0.5) * 0.06);
+    const lr = P.limbR * (0.85 + r() * 0.3);
+    b.tube(pts, [lr * 1.25, lr, lr * 0.62, lr * 0.3], 5, reg, limbTint);
+    const end = pts[3];
+    cluster(end.clone().add(new THREE.Vector3(0, 0.02, 0)), P.clusterR * (0.95 + r() * 0.2));
+    cluster(pts[2].clone().add(new THREE.Vector3(side.x * 0.03, 0.05, side.z * 0.03)), P.clusterR * 0.9);
+    // two side branches off the outer limb, each ending in a smaller clump
+    for (let j = 0; j < 2; j++) {
+      const from = pts[2].clone().lerp(pts[3], 0.3 + 0.4 * j);
+      const dir = out.clone().multiplyScalar(0.7).addScaledVector(side, (j === 0 ? -1 : 1) * 0.7).add(new THREE.Vector3(0, 0.35, 0)).normalize();
+      const to = from.clone().addScaledVector(dir, 0.11 + r() * 0.05);
+      b.tube([from, to], [lr * 0.4, lr * 0.2], 4, reg, limbTint);
+      cluster(to.add(new THREE.Vector3(0, 0.02, 0)), P.clusterR * 0.82);
+    }
+  }
+  if (P.leaderTop > 0) {
+    // central leader: the crown is full on top, and the limbs do not all start at one point
+    const mid = top0.clone().add(new THREE.Vector3(0, (P.leaderTop - 0.05 - P.fork) * 0.5, 0));
+    const tp = top0.clone().add(new THREE.Vector3((r() - 0.5) * 0.04, P.leaderTop - 0.05 - P.fork, (r() - 0.5) * 0.04));
+    b.tube([top0, mid, tp], [P.limbR * 1.1, P.limbR * 0.8, P.limbR * 0.45], 5, reg, limbTint);
+    cluster(tp.clone().add(new THREE.Vector3(0, 0.07, 0)), P.clusterR * 1.05);
+    cluster(mid.clone().add(new THREE.Vector3(0.04, 0.1, -0.03)), P.clusterR * 0.9);
   }
   return b.build();
 }
